@@ -1,0 +1,17 @@
+# Runtime dependencies for the pinned SAM3 interactive image adapter.
+numpy>=1.26,<2
+torch>=2.7
+torchvision>=0.22
+pillow
+timm>=1.0.17
+einops
+ftfy==6.1.1
+regex
+iopath>=0.1.10
+typing_extensions
+huggingface_hub
+pycocotools
+psutil
+tqdm
+setuptools<81
+

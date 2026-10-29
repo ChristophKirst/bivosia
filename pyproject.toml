@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bivosia"
+dynamic = ["version"]
+description = "Bidirectional video-object segmentation and identity analysis for animal recordings"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+    {name = "Kara Quine"},
+    {name = "Shuyu Wang"},
+    {name = "Christoph Kirst", email = "christoph.kirst@ucsf.edu"},
+]
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "PySide6>=6.5",
+    "h5py>=3.9",
+    "scipy>=1.10",
+    "mahotas>=1.4.13",
+    "scikit-learn>=1.0",
+    "umap-learn>=0.5.7",
+]
+
+[project.scripts]
+bivosia = "bivosia.run.run_app:main"
+
+[tool.hatch.version]
+path = "bivosia/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["/bivosia", "/docs", "/requirements", "/tests", "/README.md", "/LICENSE", "/pyproject.toml", "/.gitignore"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["bivosia"]
+dev-mode-dirs = ["."]
+
+[tool.hatch.build.targets.wheel.force-include]
+"docs" = "bivosia/_resources/docs"
+"requirements" = "bivosia/_resources/requirements"
+"README.md" = "bivosia/_resources/README.md"
+"LICENSE" = "bivosia/_resources/LICENSE"

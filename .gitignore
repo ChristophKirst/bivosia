@@ -1,0 +1,39 @@
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Package builds and environments
+/build/
+/dist/
+*.egg-info/
+.eggs/
+/.venv/
+/venv/
+.env
+.env.*
+!.env.example
+
+# Local recordings, results, models and scratch files
+/data/
+/output/
+/external/
+/tmp/
+.cache/
+*.log
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
