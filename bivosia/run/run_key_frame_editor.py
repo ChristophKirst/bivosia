@@ -34,7 +34,7 @@ from bivosia.ui.key_frame_editor import KeyFrameWindow
 def main():
     configure_logging()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("dataset", nargs="?", type=Path, help="Dataset folder; otherwise choose it in the editor")
+    parser.add_argument("dataset", type=Path, help="Dataset folder")
     parser.add_argument("--storage-folder", type=Path, help="Additional storage root containing recording/, masks/ and keypoints/")
     parser.add_argument("--video", type=Path, help="Video within the dataset's recording folder")
     parser.add_argument("--animals", type=int, default=2)
@@ -51,7 +51,7 @@ def main():
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setWindowIcon(application_icon())
     install_font_zoom(app)
-    dataset = Dataset(args.dataset, args.storage_folder, args.video) if args.dataset else None
+    dataset = Dataset(args.dataset, args.storage_folder, args.video)
     window = KeyFrameWindow(dataset, model=args.model, checkpoint=args.checkpoint,
                             device=args.device, parameters=parameters, animals=args.animals)
     window.showMaximized()

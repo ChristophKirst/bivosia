@@ -20,9 +20,8 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 import hashlib
 import json
 
-from bivosia.analysis.alignment import Alignment
+from bivosia.analysis.alignment import Alignment, validate_point_overlaps
 from bivosia.analysis.keypoints import validate_keypoint_alignment
-from bivosia.analysis.point_masks import validate_point_overlaps
 from bivosia.dataset.formats import format_handler
 from bivosia.dataset.masks import open_masks
 from bivosia.dataset.containers import open_container, container_output
@@ -34,7 +33,7 @@ def annotation_digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def open_keypoints(dataset, *, source_coordinates=False):
+def open_keypoints(dataset, *, source_coordinates=False, masks=None):
     """Open the selected keypoint adapter in mask or original image coordinates."""
     try:
         metadata = dataset.settings['keypoints']
@@ -43,10 +42,14 @@ def open_keypoints(dataset, *, source_coordinates=False):
         raise ValueError('Annotate the keypoint source image_shape in dataset.json under keypoints') from error
     kind = metadata.get('format')
     reader = format_handler('keypoints', dataset.keypoint_file(), format=kind)
-    with open_masks(dataset.mask('forward'), require_valid=False, direction='forward') as masks:
+    def open_points(mask):
         return reader(dataset.keypoint_file(), image_shape,
-                      target_shape=None if source_coordinates else masks.image_shape,
-                      frame_count=masks.shape[0], invalid_frames=metadata.get('invalid_frames', ()))
+                      target_shape=None if source_coordinates else mask.image_shape,
+                      frame_count=mask.shape[0], invalid_frames=metadata.get('invalid_frames', ()))
+    if masks is not None:
+        return open_points(masks)
+    with open_masks(dataset.mask('forward'), require_valid=False, direction='forward') as masks:
+        return open_points(masks)
 
 
 def write_keypoint_alignment(path, result, source, scores, mask_present, overlaps, usable, n_masks, metadata):
@@ -76,12 +79,12 @@ def write_point_overlaps(output, overlaps, usable):
     array.attrs['definition'] = 'finite xy, rounded inside image, on a valid alignment frame'
 
 
-def load_keypoints(dataset):
+def load_keypoints(dataset, *, masks=None):
     """Load optional keypoints and the alignment for the selected annotation."""
     path = dataset.keypoint_file()
     if not path.is_file():
         return None
-    data = open_keypoints(dataset)
+    data = open_keypoints(dataset, masks=masks)
     alignment_path = dataset.array('keypoint_alignment')
     if alignment_path.is_file():
         with open_container(alignment_path) as file:

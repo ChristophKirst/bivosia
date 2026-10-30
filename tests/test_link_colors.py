@@ -16,8 +16,8 @@ from bivosia.ui.colors import bgr_colors, component_colors, MASK_COLORS_BGR
 from bivosia.ui.keypoints import overlay_keypoints
 from bivosia.processing.revision import RevisionData
 from bivosia.dataset.session import RevisionSession
-from bivosia.analysis.linking import Match, initial_draft, match_masks, prepare_links
-from bivosia.analysis.revision import RevisionZone
+from bivosia.analysis.linking import Match, automatic_link, initial_draft, match_masks, prepare_links
+from bivosia.analysis.zones_of_disagreement import RevisionZone
 
 
 class LinkColorTests(unittest.TestCase):
@@ -35,6 +35,26 @@ class LinkColorTests(unittest.TestCase):
         self.assertEqual(maps, {"left": (0, 1, 2), "right": (1, 2, 0)})
         for i, j in enumerate((2, 0, 1)):
             self.assertEqual(maps["left"][i], maps["right"][j])
+
+    def test_saved_automatic_and_approved_links_remain_distinct(self):
+        session = self.session()
+        session.header['mode'] = 'automatic'
+        masks = np.array([[1, 1, 0, 2, 2]], dtype=np.uint8)
+        for job in session.jobs:
+            session.links[job.id] = automatic_link(job, lambda source, frame: masks, session.n)
+        approved, invalidated = session.jobs[:2]
+        self.approve(session, approved, (1, 0))
+        session.links[invalidated.id]['context'] = 'changed boundary'
+        before = deepcopy(session.links)
+        matcher = Mock(side_effect=AssertionError('Opening colors must not calculate links'))
+        colors = LinkColors(SimpleNamespace(linking=SimpleNamespace(boundary_match=matcher)))
+        links = colors.links(session)
+        self.assertEqual(links.mappings[approved.id], (1, 0))
+        self.assertNotIn(approved.id, links.automatic)
+        self.assertNotIn(invalidated.id, links.mappings)
+        self.assertEqual(len(links.automatic), len(session.jobs) - 2)
+        self.assertEqual(session.links, before)
+        matcher.assert_not_called()
 
     def test_approved_overrides_default_and_live_overrides_approved_without_writes(self):
         session = self.session()
@@ -122,13 +142,13 @@ class LinkColorTests(unittest.TestCase):
         before = session.fingerprint()
         first = colors.preview(session, job, draft, .6)
         self.assertIs(colors.preview(session, job, draft, .6), first)
-        self.assertEqual(data.linking.boundary_match.call_count, len(session.jobs))
+        data.linking.boundary_match.assert_not_called()
         self.assertEqual(data.linking.canonical_mapping.call_count, 1)
         labels, component = global_labels(data.linking, first, "reverse", 12, .6)
         self.assertEqual((labels, component), ((0, 1), 0))
         second = colors.preview(session, job, {**draft, "mapping": [0, 1]}, .6)
         self.assertEqual(second.maps["a"], (0, 1))
-        self.assertEqual(data.linking.boundary_match.call_count, len(session.jobs))
+        data.linking.boundary_match.assert_not_called()
         self.assertEqual(session.fingerprint(), before)
 
     def test_masks_and_assigned_points_share_global_colors(self):

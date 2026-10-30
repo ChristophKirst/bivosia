@@ -63,7 +63,7 @@ def delete_file(dataset, path, expected):
     path.unlink()
 
 
-def destination_path(root, relative):
+def destination_path(root, relative, *, replace_expected=None):
     """Keep a transferred file inside the chosen dataset folder."""
     root, relative = Path(root).expanduser().resolve(), Path(relative)
     if relative.is_absolute() or not relative.parts or '..' in relative.parts:
@@ -71,7 +71,7 @@ def destination_path(root, relative):
     target = root / relative
     if not target.parent.resolve().is_relative_to(root):
         raise ValueError(f'Destination leaves the chosen dataset folder: {target}')
-    if os.path.lexists(target):
+    if os.path.lexists(target) and replace_expected is None:
         raise FileExistsError(f'Destination already exists: {target}')
     return target
 
@@ -96,14 +96,14 @@ def copy_bytes(source, destination, size, advance=None):
 class FileDestination:
     """Stage and verify a file on its destination volume before publishing it exclusively."""
 
-    def __init__(self, target, state):
+    def __init__(self, target, state, *, replace_expected=None):
         self.target, self.state = Path(target), state
+        self.replace_expected = replace_expected
         self.temporary = None
         self.stream = None
 
     def __enter__(self):
-        if os.path.lexists(self.target):
-            raise FileExistsError(f'Destination already exists: {self.target}')
+        self._check_target()
         self.target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, name = tempfile.mkstemp(prefix='.bivosia-move-', dir=self.target.parent)
         self.temporary = Path(name)
@@ -120,7 +120,18 @@ class FileDestination:
             raise IOError('Copied file checksum differs; source was preserved')
         os.chmod(self.temporary, self.state['mode'])
         os.utime(self.temporary, ns=(self.state['mtime_ns'], self.state['mtime_ns']))
-        os.link(self.temporary, self.target)
+        self._check_target()
+        if self.replace_expected is None:
+            os.link(self.temporary, self.target)
+        else:
+            os.replace(self.temporary, self.target)
+
+    def _check_target(self):
+        if self.replace_expected is None:
+            if os.path.lexists(self.target):
+                raise FileExistsError(f'Destination already exists: {self.target}')
+        elif file_state(self.target) != self.replace_expected:
+            raise ValueError(f'Destination changed after the conflict was resolved: {self.target}')
 
     def __exit__(self, *error):
         if self.stream is not None:

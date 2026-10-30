@@ -42,15 +42,29 @@ def show_window(window):
     window.activateWindow()
 
 
+def dataset_windows():
+    """Reuse the application's dataset-window manager, including standalone viewers."""
+    app = QApplication.instance()
+    windows = app.findChild(DatasetWindows)
+    return windows if windows is not None else DatasetWindows(app)
+
+
+def notify_dataset_changed(dataset):
+    """Notify open workflow windows after dataset files or settings are saved."""
+    dataset_windows().dataset_changed.emit(dataset.directory)
+
+
 class DatasetWindows(QObject):
     """Track visible dataset windows and own windows opened by the application."""
 
     changed = Signal()
+    dataset_changed = Signal(object)
 
     def __init__(self, app):
         super().__init__(app)
         self.datasets = {}
         self.windows = {}
+        self.main_window = None
         self._pending = False
         app.installEventFilter(self)
 
@@ -99,24 +113,34 @@ class DatasetWindows(QObject):
                 if window.isVisible() and (owner := window_dataset(window)) is not None
                 and owner.directory == dataset.directory]
 
+    def open_main(self, dataset=None):
+        """Show the main BiVOSIA window and select the supplied dataset."""
+        if self.main_window is None:
+            from bivosia.ui.main_window import MainWindow
+            self.main_window = MainWindow(self)
+        if dataset is not None:
+            self.main_window.open_dataset(dataset.directory)
+        show_window(self.main_window)
+        return self.main_window
+
     def open(self, kind, dataset):
         """Open one workflow, file browser or editor for this dataset."""
         dataset = self.add_dataset(dataset)
-        for window in self.visible(dataset):
-            if window.property('dataset_window_kind') == kind:
-                show_window(window)
-                return window
         # Read the saved description again after another editor may have updated it.
         current = Dataset(dataset.directory) if dataset.description.is_file() else dataset
+        for window in self.visible(dataset):
+            if window.property('dataset_window_kind') == kind:
+                if kind == 'video' and window.preview.path != current.video:
+                    window.close()
+                    continue
+                show_window(window)
+                return window
         if kind == 'workflow':
             from bivosia.ui.workflow_window import WorkflowWindow
             window = WorkflowWindow(current, self)
         elif kind == 'files':
             from bivosia.ui.dataset_viewer import DatasetWidget
             window = DatasetWidget(current)
-        elif kind == 'console':
-            from bivosia.ui.job_console_window import JobConsole
-            window = JobConsole(current)
         elif kind == 'key_frames':
             from bivosia.ui.key_frame_editor import KeyFrameWindow
             window = KeyFrameWindow(current)
@@ -126,6 +150,9 @@ class DatasetWindows(QObject):
         elif kind == 'features':
             from bivosia.ui.mask_features_window import MaskFeaturesWindow
             window = MaskFeaturesWindow(current, self)
+        elif kind == 'mask_analysis':
+            from bivosia.ui.mask_analysis_window import MaskAnalysisWindow
+            window = MaskAnalysisWindow(current, self)
         elif kind == 'alignment':
             from bivosia.ui.keypoint_alignment_window import KeypointAlignmentWindow
             window = KeypointAlignmentWindow(current, self)
@@ -135,6 +162,9 @@ class DatasetWindows(QObject):
         elif kind == 'viewer':
             from bivosia.ui.recording_viewer import create_recording_viewer
             window = create_recording_viewer(current)
+        elif kind == 'video':
+            from bivosia.ui.video_viewer import VideoViewer
+            window = VideoViewer(current)
         else:
             raise ValueError(f'Unknown dataset window: {kind}')
         window.setProperty('dataset_window_kind', kind)

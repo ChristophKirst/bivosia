@@ -10,7 +10,7 @@ Examples
 >>> with TemporaryDirectory() as directory:
 ...     path = save_cleaned_key_frame(Dataset(directory), 0, np.ones((4, 4), dtype=np.uint8),
 ...                                   frame_count=2, animals=1,
-...                                   parameters=ANALYSIS_DEFAULTS['mask_cleanup'])
+...                                   parameters=ANALYSIS_DEFAULTS['masks']['cleanup'])
 ...     path.name
 'key_frames.cleaned.h5'
 """
@@ -24,7 +24,7 @@ import logging
 
 import numpy as np
 
-from bivosia.analysis.mask_cleanup import validate_cleaned_key_frames
+from bivosia.analysis.masks import validate_cleaned_key_frames
 from bivosia.dataset.containers import container_output, open_container
 from bivosia.dataset.paths import auxiliary_path
 

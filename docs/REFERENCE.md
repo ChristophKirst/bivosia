@@ -58,7 +58,8 @@ python -m bivosia.run.run_install cutie
 ```
 
 - In a source/editable installation, sources and weights go into `external/sam/`
-  and `external/cutie/` beside the outer project folder. Existing model paths are preserved.
+  and `external/cutie/` inside the outer project folder, beside `pyproject.toml`.
+  The project's `.gitignore` excludes `/external/`.
 - In a regular wheel installation, model downloads use `share/bivosia/external/`
   under the selected Python environment. Use a writable virtual environment; datasets stay separate.
 - Packages install into the selected Python environment. Existing core package
@@ -73,7 +74,7 @@ python -m bivosia.run.run_install cutie
 1. **New dataset** creates a description in an empty folder; **File → Open dataset**
    opens an existing one.
 2. Select the dataset and open **Workflow**.
-3. **Select video** records its path without moving the recording.
+3. The **Dataset and video** gear opens dataset settings. **Select video…** records its path without moving the recording; **Locations…** edits local/mounted and remote storage folders. **Open Video** plays the selected recording.
 4. Annotate key frames → run VOS → analyze masks → review/link zones → export.
 5. Open **Mask features** or **Keypoint alignment** for further analysis.
 
@@ -101,14 +102,19 @@ Open **View files** to browse the dataset, mounted storage and remote locations.
   Removing a location leaves its files in place.
 - Remote listings show filenames, sizes, modification times and location colors.
   Content previews and array/video metadata are available for local and mounted files.
-- Right-click a file for **Move**, **Copy** or **Delete…**. Move and Copy list dataset
-  locations first; **Choose folder…** adds a local or mounted destination.
-  Files keep their relative path.
-- Move and Copy work locally and over SSH, never overwrite a destination, and verify
-  copied bytes. Copy keeps the original file; Move removes it after verification.
-  Update remote installations to the same code version.
-- Delete confirms the full path and permanently removes only the selected file copy.
-  The file listing refreshes after each operation.
+- Right-click a file, category or job folder for **Move**, **Copy** or **Delete…**.
+  Folder actions include subfolders across the displayed locations. Files keep their relative paths.
+- Jobs offer **Delete…** only. Execution records stay where they ran and are excluded
+  from folder transfers and consolidation. Deleting a job leaves analysis results intact.
+- Right-click **jobs → Clean up completed jobs…** to review and remove completed job
+  records and logs. Failed and canceled jobs remain for inspection; nothing is deleted automatically.
+- Move and Copy list registered locations; individual files also offer **Choose folder…**.
+  Transfers work locally and over SSH and verify copied bytes.
+- Folder conflicts ask which version to use. Move removes source copies matching the
+  chosen version after copying succeeds; differing, unchosen versions remain.
+  Individual file transfers refuse existing destinations.
+- Delete confirms affected paths and file count before removal. Folder deletion removes
+  listed contents and empty folders; active jobs block changes. The listing refreshes afterward.
 
 ### Organizing existing recordings
 
@@ -130,8 +136,11 @@ python -m bivosia.run.run_organize /path/to/collection --apply
 
 ### Analysis jobs and cancellation
 
-- **Run** starts a background job; **Console** shows logs, progress and cancellation.
-- Closing the settings, workflow or console window does not cancel the job.
+- **Run** starts a background job; its detachable Processing panel shows logs, progress and cancellation.
+- Keyframes, VOS, Mask analysis and Features have processing controls. Configure alignment in its settings and run it from Workflow.
+- Workflow gear buttons open the same parameter panels without loading the editors. Dataset overrides are stored in `dataset.json` under `processing`.
+- **Run** executes selected steps in order at one Local/SSH location. Saved inputs can satisfy dependencies without rerunning their producing steps.
+- Closing an editor or Workflow leaves its submitted job running, including the remaining steps of an automatic run.
 - UMAP checks cancellation before fitting and before saving. Cancellation during
   fitting waits for the library call to finish.
 
@@ -148,7 +157,7 @@ python -m bivosia.run.run_organize /path/to/collection --apply
 
 ### Remote SAM inference
 
-- Choose **Run on → SSH** and select a [registered installation](#remote-installations).
+- Choose **Processing → SSH** and select a [registered installation](#remote-installations).
 - The model, checkpoint and device are checked on that host; local SAM is unnecessary.
 - BiVOSIA sends the full-resolution image and prompts losslessly over SSH, then
   returns masks and scores to the local editor. **No remote dataset is required.**
@@ -209,15 +218,16 @@ python -m bivosia.run.run_organize /path/to/collection --apply
 ### Jobs, scripts and results
 
 - **Jobs** reconnects to saved job IDs; settings, status and logs live in `analysis/jobs/<id>/`.
+- The processing console shows warnings in amber and errors, including tracebacks, in red.
 - **Stop** requests cooperative cancellation. A lost SSH connection is not completion.
 - **Export script** writes an editable `run_vos.py`; run it normally or with `--background`.
 - Jobs depend on host logout policies and do not survive reboot. On a cluster, use
   an allocated compute node or your scheduler with the exported script.
 - Outputs use uint8 `(frames, height, width)` masks in HDF5, NPY or NPZ, with validity
   tied to source frame indices. Existing script and mask files are protected.
-- Failed outputs retain `.partial` files (`.partial.npy` while building NPZ). Preserve
-  or move them before restarting; exact mid-interval model-state resumption is unavailable.
-- **Fetch results** downloads completed outputs, checks SHA-256 and refuses existing files.
+- Failed or cancelled writes remove their incomplete outputs by default; job logs and
+  completed results remain. Abrupt process termination can still leave temporary files.
+- View remote masks directly. Copy or consolidate files through the dataset viewer when a local copy is required.
 - A selected interval retains the full frame count and marks other frames invalid.
   **Full-recording quantification requires complete coverage.**
 
@@ -240,30 +250,59 @@ Start with **Help → Remote setup** or the [remote setup guide](REMOTE_SETUP.md
 
 - Registration does not need model weights or a dataset. **Remove** only forgets the entry.
 - Checkpoints are paths on the selected machine. **Install** can set up SAM2/Cutie there.
-- SAM transfers its image and prompts. VOS **Run** synchronizes the description, video and
-  saved key-frame JSON/HDF5 before checking and submitting the job. Local symbolic links
-  are copied as file contents; local storage paths are not copied into the remote description.
-- **Check** verifies checksums and model availability without uploading. **Run** reports
-  upload progress; **Stop** cancels preparation before job submission.
-- Identical remote files are reused. Differing files stop synchronization before uploads;
-  resolve the differences or select another remote dataset folder. Results are never replaced.
+- Select **Processing / Run on → Local or SSH** for each job. Run prepares missing inputs in the dataset viewer, then continues automatically.
+- **View files** owns dataset transfers: file **Copy / Move**, or **Consolidate…** for a complete copy.
+  Consolidation presents conflicting filenames and lets you choose a source for each one before copying.
+  Its destination description uses relative paths; sources remain in place.
+- VOS checks inputs where it will run. SAM transfers its current image and prompts.
+- Workflow status includes registered remote masks and analysis. The console reads local or SSH job logs.
+- VOS, recording and ZoD viewers share the remote mask reader. It opens the existing format adapters
+  on the server and transfers requested frames; plot arrays use a private temporary snapshot.
 - SSH uses existing key/agent authentication and host-key checking.
 
 ## Zone review, identity linking and export
 
-First run **Workflow → Mask analysis → Run**, then open **ZoD annotation and linking → Open editor**.
+First run **Workflow → Open Masks → Run**, then choose **Open ZoDs**.
 A Zone of Disagreement (ZoD) is an interval where the directional masks disagree.
 
-1. **Preview** zone detection; **Start** a new annotation or resume an existing one.
+1. **Preview** zone detection; **Automatic** creates and saves automatic directions and links.
 2. Review each zone against the video. Choose **forward**, **reverse** or **invalid**
-   in **Masks**, adjust the interval, then select **Review →**.
-3. Use **Next link →** to inspect identity assignments at boundaries; **Approve →**
+   in **Masks**, adjust Start/End with **Update**, then select **Approve →**. **Next →** advances without approving.
+3. In **Linking annotation**, use **Next →** to inspect identity assignments at boundaries; **Approve →**
    records a verified assignment.
-4. **Validate**, resolve remaining issues, then **Export…**. **Result** opens the export.
+4. **Validate**, resolve remaining issues, then select **Export** in Workflow. Choose the processing location there and **Run**.
 
-- Export requires reviewed zones and automatically resolved or approved boundaries.
+**ZoD detection**, **Zone annotation**, and **Linking annotation** are detachable panels.
+Zone and linking annotations share tabs by default. Clicking a plotted annotation selects its zone in the list and updates Start, End and Masks. The lock button enables/disables zone edits in the plot; unlocked plots use Alt+drag. Field edits remain available while the plot is locked.
+
+- Manual export requires reviewed zones and automatically resolved or approved boundaries.
+- **Automatic** and automatic workflow runs use the same calculation. Adjacent boundaries use optimal mask overlap; across invalid intervals, incoming-direction labels propagate to the next valid frame before matching directions there. Link quality and warnings are retained; automatic proposals remain distinct from manual approvals.
+- With an annotation open, **Automatic** asks whether to create a new annotation using the displayed parameters or fill unresolved links in the current annotation. Filling preserves zones, drafts, approvals and valid saved automatic links; it can be undone. New annotations use separate files.
+- **Processing** shows progress and logs and allows cancellation. Results are saved locally to the editor's dataset only after calculation completes; cancellation leaves the annotation unchanged.
+- Mask analysis computes framewise evidence only. Opening the editor or viewer loads saved links without generating proposals or changing review status.
+- Automatic direction choices allow one temporarily missing animal as specified by the Methods. Original masks and existing manual annotations remain unchanged.
 - The HDF5 bundle contains preferred consensus masks, both directions, validity and linking metadata.
 - Source masks stay unchanged. Use the export for [mask features](#mask-features-and-umap).
+
+### Automatic direction method
+
+Select **Direction method** before starting an annotation set. The selection is
+saved with its detector settings.
+
+| Method | Proposal |
+|---|---|
+| Missing masks | Choose the direction with no missing masks. Both incomplete: invalid; both complete: forward. |
+| Missing-mask counts | Invalid if either direction loses more than one mask in any frame. Otherwise choose fewer missing masks; equal nonzero totals: invalid; no missing masks: forward. |
+| Missing-mask counts + temporal quality (default) | Apply the count rule; when no masks are missing, choose the direction with higher minimum temporal assignment quality. Ties: invalid. |
+
+- The default follows the Methods manuscript. Temporal quality compares masks at
+  `t` and `t+1`, using transitions starting within the zone; the final recording
+  frame has no successor. No usable quality in either direction means invalid.
+- Missing-mask and switch flags remain separate from quality; no −∞ zone scores.
+- Existing saved choices and manual directions are preserved. New automatic
+  proposals and interval edits use the selected rule.
+- If temporal quality is unavailable, rerun **Workflow → Open Masks → Run**.
+  Loading existing annotations does not require recalculating their proposals.
 
 ### Quantification outputs
 
@@ -272,25 +311,50 @@ A Zone of Disagreement (ZoD) is an interval where the directional masks disagree
 | `mask_areas.npy` | `(2, frames, animals)`; forward then reverse, raw IDs 1…N. |
 | `mask_intersections.npy` | `(frames, animals, animals)`; forward rows, reverse columns. |
 | `mask_temporal_intersections.npy` | Optional `(2, frames-1, animals, animals)`; consecutive frames in chronological order. |
+| `mask_temporal_quality.npy` | `(2, frames-1)`; minimum signed Hungarian assignment margin for each within-pass transition. |
 | Match, quality, missing and switch arrays | Derived from the saved counts. |
 
 - Counts are exact uint32; zero denotes a missing mask. Calculations promote counts to
   int64; frames above 4,294,967,295 pixels are rejected.
 - IoU is derived as `I / (A + B - I)`, with NaN when either mask is absent.
-- Add `--temporal-intersections` to save temporal counts. They do not change zone detection.
+- Temporal quality is calculated during mask analysis. Add `--temporal-intersections`
+  to retain the full temporal count matrices as well. Zone detection thresholds are unchanged.
 - Viewers read the count files; previous normalized IoU files are not a substitute.
 
 ## Mask features and UMAP
 
-1. Export the reviewed consensus masks.
-2. Open **Workflow → Mask features** and select the annotation.
+1. Save and validate the zone/link annotation.
+2. Open **Workflow → Open features** and choose **Mask source** below.
 3. Set a **Zernike radius** large enough to contain each animal around its centroid.
    The same radius applies to all samples; degree defaults to **8**.
-4. Optionally enable preprocessing or feature z-scoring, then **Run**.
+4. Select **Start frame**, **End frame** and **Every Nth frame**. The range is inclusive; **Last** means the recording's final frame. Defaults use every frame.
+5. Select **UMAP dimensions**: 2 (default) or 3. Optionally enable preprocessing or feature z-scoring, then **Run**.
 
+Parameters and the detachable **Processing** panel are on the left. UMAP and video are side by side on the right, with the annotation timeline below.
+
+- Click a UMAP point or timeline dot to show its video frame and outline that animal's mask.
+- Click a video mask to select its UMAP point and timeline dot. Masks excluded from analysis can be outlined, but have no corresponding sample.
+- Seek or play the video to highlight all samples at the current frame.
+- The timeline's **UMAP** row shows sampled frames, with separate vertical positions for animals.
+- **Color by: Sample** uses the same UMAP-2 gradient in the scatter plot and timeline; nearby values can share similar colors. **Animal** uses global identity colors.
+- In 3D, right-drag rotates and the mouse wheel zooms. Left-click selects a sample.
+- In 2D, drag to pan and use the mouse wheel to zoom. **Show masks** opens a separate plot of the current extent: each occupied grid cell shows its nearest-to-center sample, while empty cells stay blank. Thumbnails retain mask orientation and aspect ratio, using the selected preprocessing and colors. Click a mask to select its frame and animal.
+- The video displays the selected consensus masks when available locally. Saved embeddings remain viewable when the local video is unavailable.
+
+| Mask source | Behavior |
+|---|---|
+| Automatic (default) | Use a matching export if available; otherwise use forward/reverse masks and the saved annotation. |
+| Exported masks | Require an export matching the selected annotation. |
+| Masks + annotation | Apply saved direction choices and global identity links while reading the original masks. |
+
+- The source setting is shared with the Workflow settings gear. Export is optional.
+- Reading masks uses saved links; it does not generate or save new annotations.
 - [Mahotas](https://mahotas.readthedocs.io/en/latest/api.html#mahotas.features.zernike_moments)
   calculates absolute Zernike moments, normalizing foreground weights by their sum.
-- Masks are centered without per-mask resizing. Invalid frames and absent animals are skipped.
+- **Downsample factor** defaults to 1. A factor of 2 halves width and height with nearest-neighbor sampling before preprocessing. Source files stay unchanged.
+- Radius, distances, areas and opening use the downsampled pixel grid; their numeric settings are not converted automatically.
+- Masks are centered without individually normalizing their size. Invalid frames and absent animals are skipped.
+- If an animal mask exceeds the Zernike radius, only that sample is excluded. The console warns with its frame, animal ID and required radius; other masks continue.
 - Each feature row keeps its source frame and global animal ID.
 
 ### Optional preprocessing
@@ -298,26 +362,26 @@ A Zone of Disagreement (ZoD) is an interval where the directional masks disagree
 **Preprocess masks** is off by default. When enabled, its independently selectable
 steps run in this order for each animal:
 
-| Step | Behavior | Full-resolution default |
+| Step | Behavior | Default (at factor 1) |
 |---|---|---|
 | Filter by area | Keep only the largest 8-connected component if it exceeds Main body area; otherwise retain all. | 17,600 pixels² |
 | Filter by distance | Keep the two largest components if their centroids are close enough; otherwise only the largest. Remove further components. | 1,200 pixels |
 | Morphological opening | Erode then dilate with a disk to remove thin protrusions, such as tails. Zero skips opening. | Radius 12 pixels |
 
 - All three steps start selected. Disable any step independently; disabling all leaves masks unchanged.
-- Preprocessing runs before Zernike extraction and never modifies the consensus export or key frames.
+- Preprocessing runs before Zernike extraction and never modifies source masks or key frames.
 - Completely removed animals are omitted from feature extraction.
 - For masks downsampled fourfold per dimension, the methods' values are **1,100 / 300 / 3**.
-  Set them explicitly; there is no automatic resizing or resolution inference.
+  Set them explicitly when selecting **Downsample factor: 4**.
 
 ### UMAP and feature scaling
 
 - **Z-score features before UMAP** is optional and off by default.
 - Z-scoring uses each column's population standard deviation across all samples;
   constant columns become zero. Saved Zernike vectors stay unchanged.
-- [Standard UMAP](https://umap-learn.readthedocs.io/en/latest/api.html) uses library defaults:
-  **2 dimensions, 15 neighbors, Euclidean distance, `min_dist=0.1`**.
-- All valid samples are included. Fitting needs at least four samples and variation
+- [Standard UMAP](https://umap-learn.readthedocs.io/en/latest/api.html) calculates the selected 2D or 3D embedding;
+  other settings use library defaults: **15 neighbors, Euclidean distance, `min_dist=0.1`**.
+- Sampling is applied before feature extraction; invalid frames and absent masks remain excluded. Fitting needs at least four samples for 2D or five for 3D, and variation
   between vectors; no random seed is imposed.
 - These are standard descriptors and embedding settings, not the manuscript-specific settings.
 
@@ -326,18 +390,25 @@ steps run in this order for each animal:
 | Result | File in `analysis/` |
 |---|---|
 | Zernike vectors | `mask_zernike.h5` |
-| UMAP | `mask_umap.h5` |
-| UMAP with z-scoring | `mask_umap_zscore.h5` |
+| 2D UMAP | `mask_umap.h5` |
+| 2D UMAP with z-scoring | `mask_umap_zscore.h5` |
+| 3D UMAP | `mask_umap_3d.h5` |
+| 3D UMAP with z-scoring | `mask_umap_3d_zscore.h5` |
 
 - Preprocessed results add `.preprocessed` before `.h5`.
-- Matching results are reused. Changing a checkbox selects its corresponding saved
+- Subsets add `.frames_START-END_step_N` before `.h5`; an open-ended range uses `last` for END. Full-recording files are preserved.
+- Downsampled results add `.downsample_FACTOR` and the frame-selection suffix. Their metadata records both source and analysis image dimensions.
+- Matching results are reused. Changing dimensions or a checkbox selects its corresponding saved
   result; **Run** calculates missing embeddings from existing descriptors when possible.
-- Files record the source, settings and package versions. Mismatched or incomplete
-  results must be preserved or moved before recalculation; they are not overwritten.
+- Files record the source, settings and package versions. Completed results with different
+  settings are not overwritten. Failed writes clean up their own incomplete outputs.
 
 ## Keypoint alignment
 
-1. Add keypoint data and configure its source image resolution in `dataset.json`.
+1. Open **Dataset settings → Select keypoints…**, choose a SLEAP analysis HDF5 file,
+   enter its original image height and width, and save. The file is validated and
+   copied into the configured `keypoints/` storage folder if it is not already
+   in a registered keypoints folder. The source and existing files are preserved.
 2. Open **Keypoint alignment**, choose the annotation and select keypoints.
 3. Use the saved animal count, or enter it explicitly if unavailable.
 4. Optionally enable previous-assignment fallback for ties, then run alignment.
@@ -356,6 +427,9 @@ Example SLEAP settings:
 
 - SLEAP files retain their native layout in `keypoints/`. Optional `invalid_frames`
   lists excluded source frame indices.
+- Select the same file again to edit its source dimensions. Existing alignment
+  or displacement results must be moved out of the dataset before changing their
+  source file or dimensions.
 - Points are scaled from their source resolution into mask pixels, then rounded
   to the nearest pixel. Stored coordinates stay unchanged.
 - Alignment uses the selected annotation's mask direction and skips invalid frames.
@@ -543,7 +617,7 @@ print(dataset.file('key_frames'))
 ```
 
 ```bash
-python -m doctest bivosia/analysis/features.py
+python -m doctest bivosia/analysis/mask_features.py
 ```
 
 - Prefer small executable docstring examples and focused checks.
@@ -552,7 +626,7 @@ python -m doctest bivosia/analysis/features.py
 
 ### Local examples and archived code
 
-- The standard viewer/editor defaults to `../../data/posthoc_analysis`, the six-vole dataset.
+- The standard viewer/editor defaults to `data/analysis` beside the source checkout, or under the current directory for an installed package.
 - The threshold viewer is archived at `../../_previous/run/run_zone_threshold.py`.
 - Analysis and editing do not require segmentation models or a GPU.
 

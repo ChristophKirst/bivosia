@@ -14,7 +14,7 @@ import numpy as np
 
 from bivosia.dataset.session import RevisionSession
 from bivosia.analysis.linking import initial_draft
-from bivosia.analysis.revision import RevisionZone
+from bivosia.analysis.zones_of_disagreement import RevisionZone
 from bivosia.config import DATASET_LAYOUT
 from bivosia.dataset.jobs import Job
 from bivosia.dataset.key_frames import KeyFrameSession, MaskDraft

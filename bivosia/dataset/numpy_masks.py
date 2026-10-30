@@ -82,14 +82,18 @@ class NpzMasks(NumpyMasks):
 def _mask_buffer(path, shape, dtype):
     with path.open('xb'):
         pass
-    masks = np.lib.format.open_memmap(path, mode='w+', dtype=dtype, shape=shape)
-    valid = np.zeros(shape[0], dtype=bool)
     try:
-        validate_mask_data(masks, valid)
-        yield masks, valid
-        masks.flush()
-    finally:
-        masks._mmap.close()
+        masks = np.lib.format.open_memmap(path, mode='w+', dtype=dtype, shape=shape)
+        try:
+            valid = np.zeros(shape[0], dtype=bool)
+            validate_mask_data(masks, valid)
+            yield masks, valid
+            masks.flush()
+        finally:
+            masks._mmap.close()
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 @contextmanager
@@ -97,14 +101,14 @@ def stage_npy_masks(path, shape, dtype, metadata, pending):
     """Stage memory-mapped labels and, when needed, a validity sidecar."""
     partial = auxiliary_path(path, 'partial')
     with _mask_buffer(partial, shape, dtype) as (masks, valid):
+        pending.append((partial, path))
         yield masks, valid
         if not valid.all():
             sidecar = validity_path(path)
             sidecar_partial = auxiliary_path(sidecar, 'partial')
             with sidecar_partial.open('xb') as stream:
+                pending.append((sidecar_partial, sidecar))
                 np.save(stream, valid, allow_pickle=False)
-            pending.append((sidecar_partial, sidecar))
-    pending.append((partial, path))
 
 
 @contextmanager
@@ -115,6 +119,6 @@ def stage_npz_masks(path, shape, dtype, metadata, pending):
     with _mask_buffer(buffer, shape, dtype) as (masks, valid):
         yield masks, valid
         with partial.open('xb') as stream:
+            pending.append((partial, path))
             np.savez_compressed(stream, masks=masks, valid=valid, **metadata)
     buffer.unlink()
-    pending.append((partial, path))

@@ -10,7 +10,7 @@ import json
 
 import numpy as np
 
-from bivosia.analysis.features import COMPONENT_DTYPE, HOLE_DTYPE
+from bivosia.analysis.mask_features import COMPONENT_DTYPE, HOLE_DTYPE
 
 
 def create_geometry(geometry, frame_count, n_animals, frame_height, frame_width):

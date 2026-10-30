@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from bivosia.analysis.zone_detection import ZodEvidence
+    from bivosia.analysis.zones_of_disagreement import ZodEvidence
     from bivosia.ui.timeline_base import TimelineBase
 
 from PySide6.QtCore import Qt, QTimer
@@ -35,7 +35,6 @@ from PySide6.QtGui import (
     QShortcut,
 )
 from PySide6.QtWidgets import (
-    QApplication,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
@@ -57,15 +56,15 @@ import cv2
 import numpy as np
 
 from bivosia.config import ANALYSIS_DEFAULTS
-from bivosia.analysis.zone_detection import (
-    detect_zods, mask_count_seed_signal, minimum_frame_value,
+from bivosia.analysis.zones_of_disagreement import (
+    detect_zods, frame_event_signals, mask_count_seed_signal, zone_frame_summary,
 )
 from bivosia.analysis.linking import Linker
 from bivosia.dataset.video import VideoSet
 from bivosia.processing.keypoints import calculate_keypoint_counts
 from bivosia.ui.annotations import Zone, annotate_zone_missing
 from bivosia.ui.colors import bgr_colors
-from bivosia.ui.dock_panel import PanelSplitter, PanelHost, DockPanel
+from bivosia.ui.dock_panel import PanelSplitter, PanelHost, DockPanel, add_view_menu
 from bivosia.ui.legend_panel import LegendPanel
 from bivosia.ui.link_colors import global_label_colors
 from bivosia.ui.keypoints import configure_displacement_plot
@@ -85,6 +84,7 @@ from bivosia.ui.viewer_plot_config import (
     keypoint_alignment_tracks, linked_zone_row,
 )
 from bivosia.ui.zone_plot import ZoneTimeline, TimelineOverview, ZonePanel
+from bivosia.ui.timeline_group import TimelineGroup
 
 
 ZONE_INDEX_ROLE = int(Qt.ItemDataRole.UserRole)
@@ -115,17 +115,20 @@ class ZoneVideoViewer(QMainWindow):
         quality_arrays=None, feature_data=None, feature_labels=None, sparse_features=None,
         missing_signal=None, forward_missing_signal=None, reverse_missing_signal=None,
         missing_direction_known=None, zone_tracks=None, mask_palettes=None, keypoints=None,
-        global_links=None, link_seed=ANALYSIS_DEFAULTS['zone_detection']['theta_quality'], zone_rows=(),
+        videos=None, global_links=None, link_seed=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_quality'], zone_rows=(),
+        annotation_label='Hand', controls=None,
     ) -> None:
         super().__init__()
-        self.videos = VideoSet(paths)
+        self.videos = videos if videos is not None else VideoSet(paths)
         self.keypoints = keypoints
         self.alignment_tracks = (
             keypoint_alignment_tracks(keypoints, global_links, point_counts=calculate_keypoint_counts(
                 keypoints, node_ids=keypoints.selected_node_ids))
             if keypoints is not None and keypoints.alignment is not None and global_links is not None else {}
         )
-        self.zones = list(zones) or [Zone("Full video (no hand labels)", range(self.videos.frame_count))]
+        self.zones = list(zones)
+        self.annotation_label = annotation_label
+        self.controls = controls
         self.expected_masks = expected_masks
         self.frame_analysis = sparse_features or {}
         self.dense_frame_analysis = feature_data or {}
@@ -186,15 +189,15 @@ class ZoneVideoViewer(QMainWindow):
         if self.zod_evidence is not None:
             default_quality = self.quality_metric_arrays["zod_local_quality"]
             self._set_zod_detection(
-                theta_quality=ANALYSIS_DEFAULTS['zone_detection']['theta_quality'],
-                expand_to_baseline=ANALYSIS_DEFAULTS['zone_detection']['expand_to_baseline'],
-                theta_recovery=ANALYSIS_DEFAULTS['zone_detection']['theta_recovery'],
-                theta_gap=ANALYSIS_DEFAULTS['zone_detection']['theta_gap'],
+                theta_quality=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_quality'],
+                expand_to_baseline=ANALYSIS_DEFAULTS['zones_of_disagreement']['expand_to_baseline'],
+                theta_recovery=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_recovery'],
+                theta_gap=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_gap'],
                 quality_signal=default_quality,
                 recovery_signal=default_quality,
             )
         self.mask_palettes = mask_palettes or {"forward": None, "reverse": None}
-        self.current_frame = self.zones[0].frames[0]
+        self.current_frame = self.zones[0].frames[0] if self.zones else 0
         self.playback_zone_pinned = False
         self.playback_zone_kind = "Zone"
         self.selected_zone_index = None
@@ -206,7 +209,10 @@ class ZoneVideoViewer(QMainWindow):
         self.frame_keys = FrameKeyNavigation(
             self, lambda _side, offset: self.player.seek(self.player.frame + offset)
         )
-        self._select_zone_table_row(0)
+        if self.zones:
+            self._select_zone_table_row(0)
+        else:
+            self.show_frame(0)
 
 
     def _set_zod_detection(
@@ -272,11 +278,11 @@ class ZoneVideoViewer(QMainWindow):
         }
         detail_rows = viewer_zone_rows(
             tracks, self.zones,
-            callbacks=callbacks,
+            callbacks=callbacks, annotation_label=self.annotation_label,
         )
         overview_rows = viewer_zone_rows(
             tracks, self.zones, callbacks=callbacks,
-            show_names=False,
+            show_names=False, annotation_label=self.annotation_label,
         )
         if self.global_links is not None:
             row = linked_zone_row(self.global_links.regions, links=self.global_links, visible=False)
@@ -320,20 +326,13 @@ class ZoneVideoViewer(QMainWindow):
         for column, width in enumerate((68, 68, 55, 72, 52, 70), start=1):
             header.resizeSection(column, width)
         quality = self.quality_metric_arrays.get("zod_local_quality")
-        switch_frames = (
-            None if self.zod_evidence is None
-            else np.asarray(self.zod_evidence.switch_frames, dtype=bool)
-        )
+        events = frame_event_signals(
+            self.zod_mask_count, self.forward_missing_signal, self.reverse_missing_signal,
+            self.missing_direction_known,
+            None if self.zod_evidence is None else self.zod_evidence.switch_frames)
         for row, zone in enumerate(self.zones):
-            minimum_quality = (
-                None if quality is None
-                else minimum_frame_value(quality, zone.frames)
-            )
-            frame_indices = np.asarray(tuple(zone.frames), dtype=np.int64)
-            has_switch = bool(
-                switch_frames is not None
-                and np.any(switch_frames[frame_indices])
-            )
+            summary = zone_frame_summary(zone.frames, events=events, quality=quality)
+            minimum_quality, has_switch = summary['minimum_quality'], summary['has_switch']
             values = self._zone_table_values(
                 row, zone, minimum_quality, has_switch
             )
@@ -391,17 +390,17 @@ class ZoneVideoViewer(QMainWindow):
         self.zod_quality_spin.setRange(-1.0, 1.0)
         self.zod_quality_spin.setSingleStep(0.01)
         self.zod_quality_spin.setDecimals(3)
-        self.zod_quality_spin.setValue(ANALYSIS_DEFAULTS['zone_detection']['theta_quality'])
+        self.zod_quality_spin.setValue(ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_quality'])
         self.zod_expand_checkbox = QCheckBox("Enabled")
-        self.zod_expand_checkbox.setChecked(ANALYSIS_DEFAULTS['zone_detection']['expand_to_baseline'])
+        self.zod_expand_checkbox.setChecked(ANALYSIS_DEFAULTS['zones_of_disagreement']['expand_to_baseline'])
         self.zod_recovery_spin = QDoubleSpinBox()
         self.zod_recovery_spin.setRange(-1.0, 1.0)
         self.zod_recovery_spin.setSingleStep(0.01)
         self.zod_recovery_spin.setDecimals(3)
-        self.zod_recovery_spin.setValue(ANALYSIS_DEFAULTS['zone_detection']['theta_recovery'])
+        self.zod_recovery_spin.setValue(ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_recovery'])
         self.zod_gap_spin = QSpinBox()
         self.zod_gap_spin.setRange(0, self.videos.frame_count - 1)
-        self.zod_gap_spin.setValue(ANALYSIS_DEFAULTS['zone_detection']['theta_gap'])
+        self.zod_gap_spin.setValue(ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_gap'])
         zod_rows = (
             ("Mask-count seed", QLabel("missing or F/R mismatch")),
             ("Seed measure", self.zod_quality_measure_combo),
@@ -484,10 +483,9 @@ class ZoneVideoViewer(QMainWindow):
         panels.setColumnStretch(0, 1)
         panels.setColumnStretch(1, 1)
         panels.setRowStretch(1, 1)
-        self.player.set_loop(*padded_loop(
-            self.zones[0].frames[0], self.zones[0].frames[-1],
-            self.videos.frame_count,
-        ))
+        start, end = ((self.zones[0].frames[0], self.zones[0].frames[-1]) if self.zones else
+                      (0, self.videos.frame_count - 1))
+        self.player.set_loop(*padded_loop(start, end, self.videos.frame_count))
         panels_widget = QWidget()
         panels_widget.setLayout(panels)
 
@@ -537,23 +535,13 @@ class ZoneVideoViewer(QMainWindow):
             aligned_timelines.append(self.quality_timeline)
         if self.has_feature_data:
             aligned_timelines.append(self.timeline)
-        shared_axis_width = max(
-            self.timeline_overview.left_margin,
-            *(timeline.left_margin for timeline in aligned_timelines),
-        )
-        self.timeline_overview.set_left_margin(shared_axis_width)
-        for timeline in aligned_timelines:
-            timeline.set_left_margin(shared_axis_width)
+        self.timeline_group = TimelineGroup(self.timeline_overview, self.detail_timelines,
+            aligned=aligned_timelines, content_heights={self.timeline_overview: 112, self.zone_timeline: 0})
+        self.timeline_group.align_axes(current=True)
         self.quality_timeline.set_frame_axis_labels_visible(False)
         self.timeline.set_frame_axis_labels_visible(False)
         for source in self.detail_timelines:
             source.frameClicked.connect(self.show_frame)
-            source.viewChanged.connect(self.timeline_overview.set_view)
-            for target in self.detail_timelines:
-                if target is not source:
-                    source.viewChanged.connect(target.set_view)
-        for timeline in self.detail_timelines:
-            self.timeline_overview.windowMoved.connect(timeline.set_view)
         self.timeline_overview.frameClicked.connect(self.show_frame)
         self.player_cursors = PlayerCursorController((self.player,))
         self.player_cursors.set_plots(
@@ -625,16 +613,13 @@ class ZoneVideoViewer(QMainWindow):
         analysis_panels = {}
         if self.displacement_timeline is not None:
             analysis_panels['Keypoint displacement'] = GraphPanel(self.displacement_timeline)
-        if self.has_quality_data:
-            self.quality_plot_panel = GraphPanel(self.quality_timeline, checkable=True)
-            analysis_panels['Quality'] = self.quality_plot_panel
-            self.quality_checkboxes = self.quality_plot_panel.checkboxes
-            self._update_quality_timeline_metrics()
+        self.quality_plot_panel = GraphPanel(self.quality_timeline, checkable=True)
+        analysis_panels['Quality'] = self.quality_plot_panel
+        self.quality_checkboxes = self.quality_plot_panel.checkboxes
+        self._update_quality_timeline_metrics()
 
-        if self.has_feature_data:
-            assert feature_legend is not None
-            self.feature_plot_panel = GraphPanel(self.timeline, legend=feature_legend)
-            analysis_panels['Features'] = self.feature_plot_panel
+        self.feature_plot_panel = GraphPanel(self.timeline, legend=feature_legend)
+        analysis_panels['Features'] = self.feature_plot_panel
         self.zone_panel = ZonePanel(self.zone_timeline, checkable=True)
         self.zone_panel.rowVisibilityChanged.connect(self.timeline_overview.set_row_visible)
         self.zone_panel.rowVisibilityChanged.connect(lambda *_: self.refresh_font_geometry())
@@ -651,24 +636,28 @@ class ZoneVideoViewer(QMainWindow):
 
         panel_host = PanelHost()
         self.panel_docks = {}
-        self.view_menu = self.menuBar().addMenu('View')
-        for title, widget in {'Zone list': sidebar_widget, 'Video': panels_widget,
-                              'Zones': lower_widget, **analysis_panels}.items():
-            dock = DockPanel(title, widget, panel_host)
-            dock.setFeatures(dock.features() | DockPanel.DockWidgetFeature.DockWidgetClosable)
+        widgets = dict([self.controls]) if self.controls is not None else {}
+        widgets.update({'Zone list': sidebar_widget, 'Video': panels_widget,
+                        'Zones': lower_widget, **analysis_panels})
+        for title, widget in widgets.items():
+            dock = DockPanel(title, widget, panel_host, closable=True)
             panel_host.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, dock)
             self.panel_docks[title] = dock
-            self.view_menu.addAction(dock.toggleViewAction())
-        previous_dock = self.panel_docks['Zone list']
+        self.view_menu = add_view_menu(self, self.panel_docks)
+        left_dock = self.panel_docks[self.controls[0] if self.controls is not None else 'Zone list']
+        previous_dock = left_dock
         for title in ('Zones', *analysis_panels):
             dock = self.panel_docks[title]
             panel_host.splitDockWidget(previous_dock, dock, Qt.Orientation.Vertical)
             previous_dock = dock
-        panel_host.splitDockWidget(self.panel_docks['Zone list'], self.panel_docks['Video'], Qt.Orientation.Horizontal)
+        panel_host.splitDockWidget(left_dock, self.panel_docks['Video'], Qt.Orientation.Horizontal)
+        if self.controls is not None:
+            panel_host.splitDockWidget(left_dock, self.panel_docks['Zone list'], Qt.Orientation.Vertical)
         for title in analysis_panels:
-            if title != 'Keypoint displacement':
+            if ((title == 'Quality' and not self.has_quality_data) or
+                    (title == 'Features' and not self.has_feature_data)):
                 self.panel_docks[title].hide()
-        panel_host.resizeDocks([self.panel_docks['Zone list'], self.panel_docks['Video']], [320, 880], Qt.Orientation.Horizontal)
+        panel_host.resizeDocks([left_dock, self.panel_docks['Video']], [320, 880], Qt.Orientation.Horizontal)
         panel_host.resizeDocks([self.panel_docks['Video'], self.panel_docks['Zones']], [650, 350], Qt.Orientation.Vertical)
         layout.addWidget(panel_host, 1)
         self.setCentralWidget(root)
@@ -679,7 +668,8 @@ class ZoneVideoViewer(QMainWindow):
         if self._initial_video_zoom:
             self._initial_video_zoom = False
             original = self.videos.read('original', self.current_frame)
-            masks = [self.videos.read(direction, self.current_frame) for direction in ('forward', 'reverse')]
+            masks = [mask for direction in ('forward', 'reverse')
+                     if (mask := self._mask_frame(direction, self.current_frame)) is not None]
             self.navigation.fit_masks(masks, original.shape)
 
     def paintEvent(self, event):
@@ -697,34 +687,8 @@ class ZoneVideoViewer(QMainWindow):
 
     def refresh_font_geometry(self) -> None:
         """Realign timeline axes and row heights after a font-size change."""
-        if not hasattr(self, "timeline_overview"):
-            return
-        aligned = [self.zone_timeline]
-        widths = [
-            self.timeline_overview.required_left_margin(),
-            self.zone_timeline.required_left_margin(),
-        ]
-        if self.has_quality_data:
-            aligned.append(self.quality_timeline)
-            widths.append(self.quality_timeline.required_left_axis_width())
-        if self.has_feature_data:
-            aligned.append(self.timeline)
-            widths.append(self.timeline.required_left_axis_width())
-        if self.displacement_timeline is not None:
-            aligned.append(self.displacement_timeline)
-            widths.append(self.displacement_timeline.required_left_axis_width())
-        shared_axis_width = max(widths)
-        self.timeline_overview.set_left_margin(shared_axis_width)
-        for timeline in aligned:
-            timeline.set_left_margin(shared_axis_width)
-        self.timeline_overview.setMinimumHeight(
-            max(112, self.timeline_overview.minimum_content_height())
-        )
-        self.zone_timeline.setMinimumHeight(
-            self.zone_timeline.minimum_content_height()
-        )
-        for timeline in (self.timeline_overview, *self.detail_timelines):
-            timeline.updateGeometry()
+        if hasattr(self, 'timeline_group'):
+            self.timeline_group.refresh_geometry()
 
     def _update_timeline_metrics(self) -> None:
         if not hasattr(self, "metric_checkboxes"):
@@ -914,9 +878,9 @@ class ZoneVideoViewer(QMainWindow):
         )
 
     @property
-    def zone(self) -> Zone:
+    def zone(self) -> Zone | None:
         index = self._zone_index_at_row(self.zone_table.currentRow())
-        return self.zones[0 if index is None else index]
+        return self.zones[0 if index is None else index] if self.zones else None
 
     def _zone_index_at_row(self, row: int) -> int | None:
         item = self.zone_table.item(row, 0) if row >= 0 else None
@@ -1023,8 +987,8 @@ class ZoneVideoViewer(QMainWindow):
             return
         try:
             original = self.videos.read("original", frame_number)
-            forward = self.videos.read("forward", frame_number)
-            reverse = self.videos.read("reverse", frame_number)
+            forward = self._mask_frame('forward', frame_number)
+            reverse = self._mask_frame('reverse', frame_number)
         except ValueError as error:
             self.player.stop()
             QMessageBox.warning(self, "Video error", str(error))
@@ -1035,7 +999,9 @@ class ZoneVideoViewer(QMainWindow):
             if self.mask_display.color_mode is not None and self.mask_display.color_mode.currentData() == 'global':
                 colors = bgr_colors(global_label_colors(
                     self.linking, self.global_links, direction, frame_number, self.link_seed))
-            view = self.mask_display.composite(original, masks, self.mask_palettes[direction], colors)
+            view = (self.mask_display.composite(original, masks, self.mask_palettes[direction], colors)
+                    if masks is not None else original.copy() if self.mask_display.video_visible
+                    else np.zeros_like(original))
             view = self.mask_display.composite_keypoints(view, self.keypoints, frame_number, direction, colors)
             self._set_image(direction, pane, view)
         self.current_frame = frame_number
@@ -1043,6 +1009,15 @@ class ZoneVideoViewer(QMainWindow):
         for timeline in self.detail_timelines:
             timeline.set_current_frame(frame_number)
         self.timeline_overview.set_current_frame(frame_number)
+
+    def _mask_frame(self, direction, frame):
+        """Leave unavailable or not-yet-segmented frames as the original video."""
+        if frame >= self.videos.counts.get(direction, 0):
+            return None
+        masks = self.videos.masks.get(direction)
+        if masks is not None and not masks.valid[frame]:
+            return None
+        return self.videos.read(direction, frame)
 
     def _set_image(self, key: str, label: ZoomableVideoLabel, frame) -> None:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1060,9 +1035,11 @@ class ZoneVideoViewer(QMainWindow):
         elif event.key() == Qt.Key.Key_PageDown:
             self.move(10)
         elif event.key() == Qt.Key.Key_Home:
-            self.show_frame(self.player.loop_start if self.playback_zone_pinned else self.zone.frames[0])
+            self.show_frame(self.player.loop_start if self.playback_zone_pinned else
+                            self.zone.frames[0] if self.zone else 0)
         elif event.key() == Qt.Key.Key_End:
-            self.show_frame(self.player.loop_end if self.playback_zone_pinned else self.zone.frames[-1])
+            self.show_frame(self.player.loop_end if self.playback_zone_pinned else
+                            self.zone.frames[-1] if self.zone else self.videos.frame_count - 1)
         else:
             super().keyPressEvent(event)
 
@@ -1072,6 +1049,8 @@ class ZoneVideoViewer(QMainWindow):
         if self.linking is not None:
             self.linking.clear()
         self.videos.close()
+        if hasattr(self, 'recording'):
+            self.recording.close()
         for dock in self.panel_docks.values():
             dock.hide()
         event.accept()

@@ -6,7 +6,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QPainter
-from PySide6.QtWidgets import QDockWidget, QMainWindow, QProxyStyle, QSplitter, QStyle
+from PySide6.QtWidgets import QDockWidget, QMainWindow, QProxyStyle, QSplitter, QStyle, QWidget
 
 
 SPLITTER_HANDLE_WIDTH = 5
@@ -84,11 +84,20 @@ class PanelHost(QMainWindow):
 
 
 class DockPanel(QDockWidget):
-    def __init__(self, title, widget, parent):
+    """A detachable panel, or a fixed untitled area beside detachable panels."""
+
+    def __init__(self, title, widget, parent, *, fixed=False, closable=False):
         super().__init__(title, parent)
         self.setStyle(parent.style())
-        self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable |
-                         QDockWidget.DockWidgetFeature.DockWidgetFloatable)
+        if fixed:
+            self.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+            self.setTitleBarWidget(QWidget(self))
+            self.toggleViewAction().setVisible(False)
+        else:
+            self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable |
+                             QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+                             (QDockWidget.DockWidgetFeature.DockWidgetClosable if closable
+                              else QDockWidget.DockWidgetFeature.NoDockWidgetFeatures))
         self.setWidget(widget)
 
     def event(self, event):
@@ -100,3 +109,13 @@ class DockPanel(QDockWidget):
             event.accept()
             return True
         return super().event(event)
+
+
+def add_view_menu(window, panels):
+    """Add show/hide actions for the supplied detachable panels."""
+    menu = window.menuBar().addMenu('View')
+    for title, panel in panels.items():
+        action = panel.toggleViewAction()
+        action.setText(panel.windowTitle() or title)
+        menu.addAction(action)
+    return menu

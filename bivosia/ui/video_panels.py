@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap, QTransform
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QHBoxLayout, QLabel, QRubberBand, QSizePolicy, QSlider, QStyle,
+    QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QRubberBand, QSizePolicy, QSlider, QStyle,
     QWidget,
 )
 import cv2
@@ -147,6 +147,7 @@ class ZoomableVideoLabel(QLabel):
     wheelZoomRequested = Signal(float, float, float)
     rectangleZoomRequested = Signal(QRectF)
     panRequested = Signal(float, float)
+    imageClicked = Signal(float, float)
 
     def __init__(self) -> None:
         super().__init__("Loading…")
@@ -162,6 +163,7 @@ class ZoomableVideoLabel(QLabel):
         self._drag_start: QPoint | None = None
         self._drag_last: QPoint | None = None
         self._drag_mode: str | None = None
+        self._dragged = False
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
         self.setToolTip("Left-drag: pan · right-drag: rectangle zoom · wheel: zoom")
 
@@ -226,6 +228,7 @@ class ZoomableVideoLabel(QLabel):
         if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton) and self._image_rect.contains(point):
             self._drag_start = point
             self._drag_last = point
+            self._dragged = False
             self._drag_mode = "pan" if event.button() == Qt.MouseButton.LeftButton else "rectangle"
             if self._drag_mode == "rectangle":
                 self._rubber_band.setGeometry(QRect(point, QSize()))
@@ -239,6 +242,7 @@ class ZoomableVideoLabel(QLabel):
             self._rubber_band.setGeometry(selection)
         elif self._drag_mode == "pan" and self._drag_last is not None:
             point = event.position().toPoint()
+            self._dragged |= (point - self._drag_start).manhattanLength() >= QApplication.startDragDistance()
             dx = -(point.x() - self._drag_last.x()) * self._view.width() / max(1, self._image_rect.width())
             dy = -(point.y() - self._drag_last.y()) * self._view.height() / max(1, self._image_rect.height())
             self._drag_last = point
@@ -248,10 +252,16 @@ class ZoomableVideoLabel(QLabel):
         if event.button() not in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton) or self._drag_start is None:
             return
         if self._drag_mode == "pan":
+            point = event.position().toPoint()
+            clicked = (event.button() == Qt.MouseButton.LeftButton and not self._dragged
+                       and (point - self._drag_start).manhattanLength() < QApplication.startDragDistance()
+                       and self._image_rect.contains(point))
             self._drag_start = None
             self._drag_last = None
             self._drag_mode = None
             self.unsetCursor()
+            if clicked:
+                self.imageClicked.emit(*self._normalized_source_point(point))
             return
         selection = self._rubber_band.geometry().intersected(self._image_rect)
         self._rubber_band.hide()

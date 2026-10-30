@@ -6,14 +6,19 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
+import os
 import unittest
 
 import numpy as np
 
+from bivosia.dataset.arrays import array_output
+from bivosia.dataset.containers import container_output
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.mask_output import write_masks
+from bivosia.dataset.mask_output import mask_outputs, write_masks
 from bivosia.dataset.masks import open_masks
 from bivosia.dataset.numpy_masks import validity_path
+from bivosia.dataset.paths import auxiliary_path
 from bivosia.dataset.segmentation import vos_outputs
 from bivosia.dataset.video import VideoSet
 from bivosia.processing.quantify import quantify_many
@@ -83,7 +88,61 @@ class MaskIOTests(unittest.TestCase):
             self.assertFalse(dataset.mask('forward').exists())
             self.assertFalse(dataset.mask('reverse').exists())
             self.assertFalse(list(dataset.masks.glob('*.lock')))
-            self.assertTrue(list(dataset.masks.glob('*.partial*')))
+            self.assertFalse(list(dataset.masks.glob('*.partial*')))
+            write_masks(dataset.mask('forward'), self.labels)
+            with open_masks(dataset.mask('forward')) as masks:
+                np.testing.assert_array_equal(masks[:], self.labels)
+
+    def test_failed_container_and_array_writes_preserve_completed_results(self):
+        for suffix in ('.h5', '.npy'):
+            with self.subTest(suffix=suffix):
+                path = self.root / ('result' + suffix)
+                original = b'previous completed result'
+                path.write_bytes(original)
+                writer = container_output(path) if suffix == '.h5' else array_output(path, (3,), 'i8')
+                with self.assertRaises(InterruptedError):
+                    with writer as output:
+                        if suffix == '.h5':
+                            output.create_dataset('values', data=[1, 2, 3])
+                        else:
+                            output[:] = [1, 2, 3]
+                        raise InterruptedError('Cancelled')
+                self.assertEqual(path.read_bytes(), original)
+                self.assertFalse(auxiliary_path(path, 'partial').exists())
+
+        other = self.root / 'other.h5'
+        partial = auxiliary_path(other, 'partial')
+        partial.write_bytes(b'preexisting partial')
+        with self.assertRaises(ValueError):
+            with container_output(other, overwrite=False):
+                self.fail('Existing partial was accepted')
+        self.assertEqual(partial.read_bytes(), b'preexisting partial')
+
+    def test_failed_mask_publication_removes_only_its_own_files(self):
+        for suffix in ('.h5', '.npy', '.npz'):
+            with self.subTest(suffix=suffix):
+                paths = {name: self.root / (name + suffix) for name in ('forward', 'reverse')}
+                replace = os.replace
+                calls = []
+                def publish(source, target):
+                    calls.append(target)
+                    if len(calls) == 2:
+                        raise OSError('Publication failed')
+                    replace(source, target)
+                with patch('bivosia.dataset.mask_output.os.replace', side_effect=publish):
+                    with self.assertRaisesRegex(OSError, 'Publication failed'):
+                        with mask_outputs(paths, self.labels.shape) as outputs:
+                            for masks, valid in outputs.values():
+                                masks[:] = self.labels
+                                valid[:] = [True, False, True]
+                self.assertFalse(list(self.root.iterdir()))
+                write_masks(paths['forward'], self.labels)
+                saved = paths['forward'].read_bytes()
+                with self.assertRaises(FileExistsError):
+                    with mask_outputs(paths, self.labels.shape):
+                        self.fail('Existing result was accepted')
+                self.assertEqual(paths['forward'].read_bytes(), saved)
+                paths['forward'].unlink()
 
     def test_discovery_rejects_ambiguous_formats(self):
         dataset = Dataset(self.root)

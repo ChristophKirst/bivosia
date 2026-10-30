@@ -109,9 +109,7 @@ class RemoteInstallationsDialog(QDialog):
         self._busy(True)
         self.status.setText('Checking installation…')
         self.task = Task(remote.check_installation, self)
-        self.task.ready.connect(self._saved)
-        self.task.failed.connect(self.status.setText)
-        self.task.finished.connect(self._finished)
+        self.task.connect_callbacks(ready=self._saved, failed=self.status.setText, finished=self._finished)
         self.task.start()
 
     def _saved(self, details):
@@ -142,7 +140,6 @@ class RemoteInstallationsDialog(QDialog):
         self.remove_button.setEnabled(not busy and self.installation_id is not None)
 
     def _finished(self):
-        self.task.deleteLater()
         self.task = None
         self._busy(False)
 

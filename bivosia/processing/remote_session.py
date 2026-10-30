@@ -62,7 +62,7 @@ class RemoteSession:
             if not isinstance(response, dict):
                 raise ValueError('Invalid remote session response')
             if response.get('protocol') != REMOTE_PROTOCOL_VERSION:
-                raise RuntimeError('Update the remote BiVOSIA code: incompatible image-session protocol')
+                raise RuntimeError('Update the remote BiVOSIA code: incompatible session protocol')
             if 'error' in response:
                 raise RuntimeError(response['error'])
             return response

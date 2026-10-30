@@ -44,6 +44,15 @@ def operation(name):
     if name == 'align':
         from bivosia.processing.alignment import alignment_job
         return alignment_job
+    if name == 'detect_link':
+        from bivosia.processing.zod_detection import detect_link_job
+        return detect_link_job
+    if name == 'export':
+        from bivosia.processing.export import export_job
+        return export_job
+    if name == 'workflow':
+        from bivosia.processing.workflow import workflow_job
+        return workflow_job
     raise ValueError(f'Unknown processing operation: {name}')
 
 
@@ -103,7 +112,7 @@ def submit(dataset, name, settings, *, background=True, job_id=None, persistent=
 
 
 def run(job, *, console=True):
-    """Execute once, logging progress and retaining incomplete results on failure."""
+    """Execute once, logging progress, errors and completion status."""
     try:
         with job.path('claim').open('x', encoding='utf-8') as stream:
             stream.write(str(os.getpid()))

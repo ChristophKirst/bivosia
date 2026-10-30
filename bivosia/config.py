@@ -8,15 +8,26 @@ from pathlib import Path
 import sys
 
 PACKAGE_DIRECTORY = Path(__file__).resolve().parent
+
 PROJECT_DIRECTORY = PACKAGE_DIRECTORY.parent
+
 SOURCE_CHECKOUT = (PROJECT_DIRECTORY / 'pyproject.toml').is_file()
+
 RESOURCE_DIRECTORY = PROJECT_DIRECTORY if SOURCE_CHECKOUT else PACKAGE_DIRECTORY / '_resources'
-EXTERNAL_DIRECTORY = (PROJECT_DIRECTORY.parent / 'external' if SOURCE_CHECKOUT
+
+EXTERNAL_DIRECTORY = (PROJECT_DIRECTORY / 'external' if SOURCE_CHECKOUT
                       else Path(sys.prefix) / 'share/bivosia/external')
-DEFAULT_DATASET = (PROJECT_DIRECTORY.parent if SOURCE_CHECKOUT else Path.cwd()) / 'data/posthoc_analysis'
+
+DEFAULT_DATASET = (PROJECT_DIRECTORY.parent if SOURCE_CHECKOUT else Path.cwd()) / 'data/analysis'
+
 APPLICATION_SETTINGS = ('BiVOSIA', 'Application')
+
+FONT_SIZE_SETTING = 'font_point_size'
+
 REMOTE_SETTINGS = {'installations': 'remote_installations', 'datasets': 'remote_datasets'}
-REMOTE_PROTOCOL_VERSION = 2
+
+REMOTE_PROTOCOL_VERSION = 1
+
 KEY_FRAME_BACKENDS = {
     'sam3': {
         'class': ('bivosia.segmentation.backends.sam', 'Sam3Segmenter'),
@@ -34,6 +45,7 @@ KEY_FRAME_BACKENDS = {
         'arguments': {'config': '--sam2-config'},
     },
 }
+
 VOS_BACKENDS = {
     'cutie': {
         'class': ('bivosia.segmentation.backends.cutie', 'CutieSegmenter'),
@@ -64,6 +76,7 @@ VOS_BACKENDS = {
 }
 
 MODEL_INSTALL_LOCK = EXTERNAL_DIRECTORY / 'model_install.lock'
+
 MODEL_INSTALLATIONS = {
     'cutie': {
         'repository': 'https://github.com/hkchengrex/Cutie.git',
@@ -95,6 +108,13 @@ MODEL_INSTALLATIONS = {
 }
 
 LINKED_MASK_STREAMS = ('forward', 'reverse', 'preferred')
+
+CONSENSUS_MASK_DEFAULTS = {'source': 'auto'}
+CONSENSUS_MASK_SOURCES = {
+    'auto': {'label': 'Automatic', 'inputs': ('consensus_masks', 'annotations')},
+    'export': {'label': 'Exported masks', 'inputs': ('export', 'annotations')},
+    'annotation': {'label': 'Masks + annotation', 'inputs': ('masks', 'analysis', 'annotations')},
+}
 
 DATA_FORMATS = {
     'masks': {
@@ -182,33 +202,42 @@ DATA_FORMATS = {
         },
     },
 }
+
 JOB_TERMINAL_STATES = ("complete", "failed", "cancelled")
+
+AUTOMATIC_ANNOTATION_PREFIX = 'automatic_{run_id}_'
+
+WORKFLOW_STEPS = {
+    'vos': {'label': 'VOS', 'inputs': ('video', 'key_frames'), 'output': 'masks'},
+    'quantify': {'label': 'Mask analysis', 'inputs': ('masks',), 'output': 'analysis'},
+    'detect_link': {'label': 'ZoD detection and linking', 'inputs': ('masks', 'analysis'), 'output': 'annotations'},
+    'export': {'label': 'Export', 'inputs': ('masks', 'analysis', 'annotations'), 'output': 'export'},
+    'shape_features': {'label': 'Mask features',
+                       'inputs': CONSENSUS_MASK_SOURCES[CONSENSUS_MASK_DEFAULTS['source']]['inputs'],
+                       'output': 'features'},
+    'align': {'label': 'Keypoint alignment', 'inputs': ('masks', 'annotations', 'keypoints'), 'output': 'alignment'},
+}
+
 DATASET_VIEWER_DEFAULTS = {'max_text_bytes': 1024 * 1024}
+
+AUTO_DIRECTION_METHODS = {
+    'missing_masks': 'Missing masks',
+    'missing_mask_counts': 'Missing-mask counts',
+    'temporal_quality': 'Missing-mask counts + temporal quality',
+}
+
 
 # Groups follow module names in analysis/.
 ANALYSIS_DEFAULTS = {
-    'mask_cleanup': {
-        # Contour areas in full-resolution mask pixels squared; square kernel side in pixels.
-        'contour_min_area': 1000,
-        'contour_max_area': 100000,
-        'overlap_kernel': 5,
-    },
-    'mask_preprocessing': {
-        # Input mask pixels: full-resolution equivalents of 1100 px², 300 px, 3 px at 4× downsampling.
-        'filter_by_area': True,
-        'main_body_area': 17600,
-        'filter_by_distance': True,
-        'fragment_distance': 1200,
-        'apply_opening': True,
-        'opening_radius': 12,
-    },
-    'zone_detection': {
+    'zones_of_disagreement': {
         'theta_quality': 0.60,
         'theta_recovery': 0.90,
         'theta_gap': 0,
         'expand_to_baseline': True,
+        'direction_method': 'temporal_quality',
     },
     'alignment': {
+        'dilation_kernel': 5,
         'fallback_previous': False,
         'tie_relative_tolerance': 1e-12,
         'tie_absolute_tolerance': 1e-12,
@@ -216,19 +245,32 @@ ANALYSIS_DEFAULTS = {
     'linking': {
         'tie_absolute_tolerance': 1e-7,
     },
-    'point_masks': {
-        'dilation_kernel': 5,
-    },
-    'shape_features': {
-        'degree': 8,
+    'embedding': {
+        'n_components': 2,
         'z_score': False,
-        'preprocess_masks': False,
     },
-    'masks': {
+    'quality': {
         'count_dtype': 'uint32',
         'temporal_intersections': False,
     },
-    'features': {
+    'masks': {
+        'cleanup': {
+            # Contour areas in full-resolution mask pixels squared; square kernel side in pixels.
+            'contour_min_area': 1000,
+            'contour_max_area': 100000,
+            'overlap_kernel': 5,
+        },
+        'preprocessing': {
+            # Input mask pixels: full-resolution equivalents of 1100 px², 300 px, 3 px at 4× downsampling.
+            'filter_by_area': True,
+            'main_body_area': 17600,
+            'filter_by_distance': True,
+            'fragment_distance': 1200,
+            'apply_opening': True,
+            'opening_radius': 12,
+        },
+    },
+    'mask_features': {
         'include_convex_hull': True,
         'include_hu_features': False,
         'include_fft_features': False,
@@ -237,6 +279,11 @@ ANALYSIS_DEFAULTS = {
             'low_frequency_cutoff': 8,
             'perimeter_cutoffs': (8, 16, 32),
             'bending_cutoff': 32,
+        },
+        'zernike': {
+            'degree': 8,
+            'downsample_factor': 1,
+            'preprocess_masks': False,
         },
     },
 }
@@ -264,6 +311,9 @@ PROCESSING_DEFAULTS = {
     },
     'shape_features': {
         'block_size': 32,
+        'start_frame': 0,
+        'end_frame': -1,
+        'frame_step': 1,
     },
     'jobs': {
         'heartbeat_seconds': 5,
@@ -326,6 +376,7 @@ DATASET_LAYOUT = {
                 "keypoint_displacement": {"name": "keypoint_displacement.h5"},
                 "mask_intersections": {"name": "mask_intersections.npy"},
                 "mask_temporal_intersections": {"name": "mask_temporal_intersections.npy"},
+                "mask_temporal_quality": {"name": "mask_temporal_quality.npy"},
                 "mask_areas": {"name": "mask_areas.npy"},
                 "mask_iou_match": {"name": "mask_iou_match.npy"},
                 "mask_quality": {"name": "mask_quality.npy"},
@@ -337,10 +388,18 @@ DATASET_LAYOUT = {
                 "mask_geometry": {"name": "mask_geometry.h5"},
                 "mask_zernike": {"name": "mask_zernike.h5"},
                 "mask_zernike_preprocessed": {"name": "mask_zernike.preprocessed.h5"},
+                "mask_zernike_sampled": {"name": "mask_zernike{preprocessed}.frames_{start_frame}-{end_frame}_step_{frame_step}.h5"},
+                "mask_umap_sampled": {"name": "mask_umap{dimensions}{z_score}{preprocessed}.frames_{start_frame}-{end_frame}_step_{frame_step}.h5"},
+                "mask_zernike_downsampled": {"name": "mask_zernike{preprocessed}.downsample_{downsample_factor}.frames_{start_frame}-{end_frame}_step_{frame_step}.h5"},
+                "mask_umap_downsampled": {"name": "mask_umap{dimensions}{z_score}{preprocessed}.downsample_{downsample_factor}.frames_{start_frame}-{end_frame}_step_{frame_step}.h5"},
                 "mask_umap": {"name": "mask_umap.h5"},
                 "mask_umap_preprocessed": {"name": "mask_umap.preprocessed.h5"},
                 "mask_umap_zscore": {"name": "mask_umap_zscore.h5"},
                 "mask_umap_zscore_preprocessed": {"name": "mask_umap_zscore.preprocessed.h5"},
+                "mask_umap_3d": {"name": "mask_umap_3d.h5"},
+                "mask_umap_3d_preprocessed": {"name": "mask_umap_3d.preprocessed.h5"},
+                "mask_umap_3d_zscore": {"name": "mask_umap_3d_zscore.h5"},
+                "mask_umap_3d_zscore_preprocessed": {"name": "mask_umap_3d_zscore.preprocessed.h5"},
             },
             "folders": {
                 "cache": {"name": "cache"},

@@ -31,7 +31,7 @@ class FrameKeyNavigation(QObject):
         app = QApplication.instance()
         active = app.activeWindow()
         if app.activeModalWidget() is not None or active is None or not (
-                active is self.owner or self.owner.isAncestorOf(active)):
+                active is self.owner.window() or self.owner.isAncestorOf(active)):
             return False
         key = event.key()
         if key not in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):

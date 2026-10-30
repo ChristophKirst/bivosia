@@ -18,18 +18,19 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 from copy import deepcopy
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMenu, QMessageBox, QProgressDialog, QPushButton, QSpinBox,
+    QMenu, QMessageBox, QPushButton, QSpinBox,
     QScrollArea, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from bivosia.ui.icons import action_icon
-from bivosia.config import ANALYSIS_DEFAULTS
-from bivosia.ui.dock_panel import DockPanel, PanelHost, PanelSplitter
+from bivosia.ui.analysis_parameters import AnalysisParameters
+from bivosia.ui.application_menus import add_dataset_window_menus
+from bivosia.ui.dock_panel import DockPanel, PanelHost, PanelSplitter, add_view_menu
 from bivosia.ui.link_editor import LinkDiagram
 from bivosia.ui.link_colors import LinkColors, boundary_status
 from bivosia.ui.plot_models import PlotInteractions, ReferenceLine, SeriesGroup, SeriesSpec
@@ -38,38 +39,23 @@ from bivosia.ui.player import FrameKeyNavigation, PlayerCursorController
 from bivosia.ui.quality_plot import GraphTimeline, GraphPanel
 from bivosia.ui.revision_plots import editor_rows
 from bivosia.ui.review_video_viewer import ReviewVideoViewer
+from bivosia.ui.task import LoggedTask
+from bivosia.ui.task_monitor import TaskMonitor
+from bivosia.ui.timeline_group import TimelineGroup
 from bivosia.ui.viewer_plot_config import FeaturePlotController
+from bivosia.ui.window_manager import dataset_windows, notify_dataset_changed
 from bivosia.ui.zone_plot import ZoneTimeline, TimelineOverview, ZonePanel
-from bivosia.processing.export import export_masks
-from bivosia.analysis.linking import inverse, swap_endpoint, validation_errors
+from bivosia.analysis.linking import critical_links, inverse, swap_endpoint, unresolved_links, validation_errors
+from bivosia.analysis.zones_of_disagreement import critical_zones
 from bivosia.ui.playback import zone_loop, link_loops, upcoming_frames
 from bivosia.processing.revision import RevisionData
+from bivosia.processing.zod_detection import calculate_links, prepare_automatic_annotation
 from bivosia.dataset.session import RevisionSession
 from bivosia.dataset.layout import Dataset
 from bivosia.dataset.video import VideoBuffer
 
 
-class ExportWorker(QThread):
-    progress = Signal(int, int)
-    completed = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, session, data, path):
-        super().__init__()
-        self.session, self.path = deepcopy(session), path
-        self.dataset = deepcopy(data.dataset)
-        self.quality, self.switches = data.quality, data.evidence.switch_frames
-
-    def run(self):
-        try:
-            self.completed.emit(export_masks(self.session, self.dataset, self.path,
-                                              quality=self.quality, switches=self.switches, progress=self.progress.emit,
-                                              cancelled=self.isInterruptionRequested))
-        except Exception as error:
-            self.failed.emit(str(error))
-
-
-class RevisionLinkingWindow(QMainWindow):
+class RevisionLinkingWindow(PanelHost):
     def __init__(self, dataset=None, annotation=None):
         super().__init__()
         self.statusBar()
@@ -83,20 +69,22 @@ class RevisionLinkingWindow(QMainWindow):
         self._coloring = None
         self.warnings = []
         self.dataset = dataset
-        self.result_windows = []
-        self.export_worker = None
+        self.dataset_windows = dataset_windows()
+        self.setProperty('dataset_window_kind', 'zones')
+        self.automatic_task = None
+        self._close_after_automatic = False
+        self._closing = False
         self.autosave = QTimer(self)
         self.autosave.setSingleShot(True)
         self.autosave.timeout.connect(lambda: self._run(self.save))
-        self.setWindowTitle("Zone editor")
+        self.setWindowTitle("ZoD detection and linking")
         self.resize(1650, 1050)
         self._build_ui()
         self.frame_keys = FrameKeyNavigation(
-            self, self._step_frame, lambda: self.active_viewer == "Link"
+            self, self._step_frame, lambda: self.active_viewer == "Link" and self.automatic_task is None
         )
         if dataset is not None:
             self.directory_edit.setText(str(dataset.directory))
-            self.storage_folder_edit.setText(next(iter(dataset.settings.get("storage_folders", [])), ""))
             self.load_data(annotation)
 
     def _button(self, text, callback, layout, tooltip=""):
@@ -107,6 +95,8 @@ class RevisionLinkingWindow(QMainWindow):
         return button
 
     def _run(self, callback):
+        if self.automatic_task is not None:
+            return
         try:
             callback()
         except Exception as error:
@@ -114,16 +104,13 @@ class RevisionLinkingWindow(QMainWindow):
             QMessageBox.warning(self, "Revision editor", str(error))
 
     def _build_ui(self):
-        body = PanelSplitter(Qt.Orientation.Horizontal)
         sidebar = QWidget()
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(6, 6, 6, 6)
         files = QGridLayout()
         self.directory_edit = QLineEdit()
-        self.storage_folder_edit = QLineEdit()
         self.annotation_edit = QLineEdit()
         for row, (label, control) in enumerate((("Dataset", self.directory_edit),
-                                               ("Storage", self.storage_folder_edit),
                                                ("Annotation", self.annotation_edit))):
             files.addWidget(QLabel(label), row, 0)
             files.addWidget(control, row, 1)
@@ -139,15 +126,10 @@ class RevisionLinkingWindow(QMainWindow):
         load.clicked.connect(lambda: self._run(self.load_data))
         files.addWidget(load, 0, 3)
         self.directory_edit.returnPressed.connect(lambda: self._run(self.load_data))
-        choose_storage = QPushButton("Open")
-        choose_storage.setIcon(action_icon('open'))
-        choose_storage.setToolTip("Choose storage folder")
-        choose_storage.clicked.connect(self._choose_storage_folder)
-        files.addWidget(choose_storage, 1, 2, 1, 2)
         open_file = QPushButton("Open")
         open_file.setIcon(action_icon('open'))
         open_file.clicked.connect(lambda: self._run(self.open_annotations))
-        files.addWidget(open_file, 2, 2, 1, 2)
+        files.addWidget(open_file, 1, 2, 1, 2)
         files.setColumnStretch(1, 1)
         side.addLayout(files)
         row = QHBoxLayout()
@@ -155,79 +137,27 @@ class RevisionLinkingWindow(QMainWindow):
         self.save_button = self._button("Save", self.save, row)
         self._button("Save as…", self.save_as, row)
         side.addLayout(row)
-        settings = QGridLayout()
-        self.seed, self.recover = QDoubleSpinBox(), QDoubleSpinBox()
-        for column, (label, spin, value) in enumerate((
-            ("Seed", self.seed, ANALYSIS_DEFAULTS['zone_detection']['theta_quality']),
-            ("Recovery", self.recover, ANALYSIS_DEFAULTS['zone_detection']['theta_recovery']),
-        )):
-            spin.setRange(-1, 1)
-            spin.setDecimals(2)
-            spin.setSingleStep(.01)
-            spin.setValue(value)
-            settings.addWidget(QLabel(label), 0, column)
-            settings.addWidget(spin, 1, column)
-        self.gap = QSpinBox()
-        self.gap.setRange(0, 100000)
-        self.gap.setValue(ANALYSIS_DEFAULTS['zone_detection']['theta_gap'])
-        settings.addWidget(QLabel("Gap"), 0, 2)
-        settings.addWidget(self.gap, 1, 2)
-        side.addLayout(settings)
         row = QHBoxLayout()
-        self.preview_button = self._button("Preview", self.preview_detection, row)
-        self.start_button = self._button("Start", self.start_revision, row, "Start or resume annotation")
         self.undo_button = self._button("Undo", lambda: self._history(False), row)
         self.redo_button = self._button("Redo", lambda: self._history(True), row)
         side.addLayout(row)
-        self.tabs = QTabWidget()
-        self.zone_list, self.boundary_list = QListWidget(), QListWidget()
-        self.tabs.setMinimumHeight(160)
-        self.tabs.addTab(self.zone_list, "Zones")
-        self.tabs.addTab(self.boundary_list, "Boundaries")
-        self.tabs.currentChanged.connect(self._tab_changed)
-        self.zone_list.currentItemChanged.connect(self._zone_item)
-        self.zone_list.itemDoubleClicked.connect(self._zone_item)
-        self.boundary_list.currentItemChanged.connect(self._boundary_item)
-        side.addWidget(self.tabs, 1)
-        form = QFormLayout()
-        self.start_frame, self.end_frame = QSpinBox(), QSpinBox()
-        self.source = QComboBox()
-        self.source.addItems(["forward", "reverse", "invalid"])
-        for title, field in (("Start", self.start_frame), ("End", self.end_frame), ("Masks", self.source)):
-            form.addRow(title, field)
-        side.addLayout(form)
-        self.source.currentTextChanged.connect(lambda value: self._run(lambda: self._change_zone_source(value)))
-        row = QHBoxLayout()
-        self._button("Apply", lambda: self._edit("bounds", start=self.start_frame.value(), end=self.end_frame.value()), row)
-        self._button("Add", lambda: self._edit("add", start=self.start_frame.value(), end=self.end_frame.value()), row)
-        side.addLayout(row)
-        row = QHBoxLayout()
-        self._button("Split", lambda: self._edit("split", frame=self.players["zone"].frame), row, "Split at the zone cursor")
-        self._button("Join", self._join, row, "Join with the next zone")
-        self._button("Delete", lambda: self._edit("delete"), row)
-        side.addLayout(row)
-        row = QHBoxLayout()
-        self._button("Review →", self.review_zone, row, "Mark this zone reviewed and select the next zone")
-        self._button("Next link →", self.next_boundary, row, "Next boundary needing review")
-        side.addLayout(row)
-        self.diagram_holder = QVBoxLayout()
-        side.addLayout(self.diagram_holder)
-        self.diagram = None
-        row = QHBoxLayout()
-        self._button("Hungarian", self.repropose, row, "Recompute the Hungarian linking proposal")
-        self._button("Approve →", self.approve_link, row, "Approve this link and select the next boundary")
-        side.addLayout(row)
-        row = QHBoxLayout()
-        self._button("Validate", self.validate, row)
-        self._button("Export…", self.export_global, row, "Export globally relabeled masks")
-        self.result_button = self._button("Result", self.open_result, row, "Open the global mask viewer")
-        side.addLayout(row)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(sidebar)
-        body.addWidget(scroll)
+        self.sidebar_dock = DockPanel("", sidebar, self, fixed=True)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.sidebar_dock)
+        self.annotation_mode = "Zone"
+        self.annotation_docks = {}
+        for key, title, build in (("Detection", "ZoD detection", self._detection_panel),
+                                  ("Zone", "Zone annotation", self._zone_annotation_panel),
+                                  ("Link", "Linking annotation", self._link_annotation_panel)):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(build())
+            dock = DockPanel(title, scroll, self, closable=True)
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+            self.annotation_docks[key] = dock
+        self.splitDockWidget(self.sidebar_dock, self.annotation_docks["Detection"], Qt.Orientation.Vertical)
+        self.splitDockWidget(self.annotation_docks["Detection"], self.annotation_docks["Zone"], Qt.Orientation.Vertical)
+        self.setTabPosition(Qt.DockWidgetArea.LeftDockWidgetArea, QTabWidget.TabPosition.North)
         panel_host = PanelHost()
-        body.addWidget(panel_host)
         self.viewers = {
             "Zone": ReviewVideoViewer((("zone", "#ff6576"),)),
             "Link": ReviewVideoViewer((("left", "#62db8d"), ("right", "#ff9754"))),
@@ -247,8 +177,6 @@ class RevisionLinkingWindow(QMainWindow):
             player.playingChanged.connect(lambda playing, key=name: self._run(lambda: self._playing_changed(key, playing)))
             player.rangeChanged.connect(lambda key=name: self._range_changed(key))
             player.sourceChanged.connect(lambda value, key=name: self._run(lambda: self._direction_changed(key, value)))
-        body.setStretchFactor(1, 1)
-        body.setSizes((380, 1260))
         plot_panel = QWidget()
         plot_layout = QVBoxLayout(plot_panel)
         plot_layout.setContentsMargins(4, 4, 6, 6)
@@ -259,18 +187,41 @@ class RevisionLinkingWindow(QMainWindow):
         self.message.setWordWrap(True)
         plot_layout.addWidget(self.message)
         self.panel_docks = {}
-        for title, widget in (*self.viewers.items(), ("Plots", plot_panel)):
-            dock = DockPanel("" if title == "Plots" else title, widget, panel_host)
+        for title, widget in (*self.viewers.items(), ("Plots", plot_panel),
+                              ("Quality", QWidget()), ("Features", QWidget())):
+            dock = DockPanel("" if title == "Plots" else title, widget, panel_host, closable=True)
             panel_host.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, dock)
             self.panel_docks[title] = dock
         panel_host.splitDockWidget(self.panel_docks["Zone"], self.panel_docks["Plots"], Qt.Orientation.Vertical)
+        panel_host.splitDockWidget(self.panel_docks["Plots"], self.panel_docks["Quality"], Qt.Orientation.Vertical)
+        panel_host.splitDockWidget(self.panel_docks["Quality"], self.panel_docks["Features"], Qt.Orientation.Vertical)
+        self.panel_docks["Quality"].hide()
+        self.panel_docks["Features"].hide()
         panel_host.tabifyDockWidget(self.panel_docks["Zone"], self.panel_docks["Link"])
         panel_host.setTabPosition(Qt.DockWidgetArea.AllDockWidgetAreas, QTabWidget.TabPosition.North)
         panel_host.resizeDocks([self.panel_docks["Zone"], self.panel_docks["Plots"]], [500, 400], Qt.Orientation.Vertical)
         for title in self.viewers:
             self.panel_docks[title].visibilityChanged.connect(lambda visible, key=title: self._viewer_visible(key, visible))
         self.panel_docks["Zone"].raise_()
-        self.setCentralWidget(body)
+        self.setCentralWidget(panel_host)
+        self.monitor = TaskMonitor(self)
+        self.processing_dock = DockPanel("Processing", self.monitor, self, closable=True)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.processing_dock)
+        self.splitDockWidget(self.annotation_docks["Zone"], self.processing_dock, Qt.Orientation.Vertical)
+        self.tabifyDockWidget(self.annotation_docks["Zone"], self.annotation_docks["Link"])
+        self.resizeDocks([self.sidebar_dock], [380], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.sidebar_dock, self.annotation_docks["Detection"],
+                          self.annotation_docks["Zone"], self.processing_dock],
+                         [120, 180, 420, 220], Qt.Orientation.Vertical)
+        for title in ("Zone", "Link"):
+            self.annotation_docks[title].visibilityChanged.connect(
+                lambda visible, key=title: self._annotation_visible(key, visible))
+        self.annotation_docks["Zone"].raise_()
+        self.view_menu = add_view_menu(self, {
+            **{dock.windowTitle(): dock for dock in self.annotation_docks.values()},
+            'Processing': self.processing_dock, **self.panel_docks})
+        self.file_menu, self.help_menu = add_dataset_window_menus(
+            self, self.dataset_windows, lambda: self.dataset, self.open_dataset)
         for keys, callback in ((QKeySequence.StandardKey.Undo, lambda: self._history(False)),
                                (QKeySequence.StandardKey.Redo, lambda: self._history(True)),
                                (QKeySequence.StandardKey.Save, self.save)):
@@ -279,18 +230,121 @@ class RevisionLinkingWindow(QMainWindow):
         for pane in self.viewers["Link"].grid.panes.values():
             self._connect_link_drag(pane)
 
+    def _detection_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        self.parameters = AnalysisParameters(self.dataset or Dataset(Path.cwd()), 'detect_link')
+        self.seed = self.parameters.controls['theta_quality']
+        self.recover = self.parameters.controls['theta_recovery']
+        self.gap = self.parameters.controls['theta_gap']
+        self.direction_method = self.parameters.direction_method
+        layout.addWidget(self.parameters)
+        row = QHBoxLayout()
+        self.preview_button = self._button("Preview", self.preview_detection, row)
+        self.automatic_button = self._button("Automatic", self.run_automatic, row,
+                                             "Generate automatic directions and links, or fill unresolved links")
+        layout.addLayout(row)
+        return panel
+
+    def _zone_annotation_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        self.zone_list = QListWidget()
+        self.zone_list.currentItemChanged.connect(self._zone_item)
+        self.zone_list.itemDoubleClicked.connect(self._zone_item)
+        layout.addWidget(self.zone_list, 1)
+        form = QFormLayout()
+        self.start_frame, self.end_frame = QSpinBox(), QSpinBox()
+        self.source = QComboBox()
+        self.source.addItems(["forward", "reverse", "invalid"])
+        for title, field in (("Start", self.start_frame), ("End", self.end_frame), ("Masks", self.source)):
+            form.addRow(title, field)
+        layout.addLayout(form)
+        self.source.currentTextChanged.connect(lambda value: self._run(lambda: self._change_zone_source(value)))
+        row = QHBoxLayout()
+        self._button("Update", lambda: self._edit("bounds", start=self.start_frame.value(), end=self.end_frame.value()), row)
+        self._button("Add", lambda: self._edit("add", start=self.start_frame.value(), end=self.end_frame.value()), row)
+        layout.addLayout(row)
+        row = QHBoxLayout()
+        self._button("Split", lambda: self._edit("split", frame=self.players["zone"].frame), row, "Split at the zone cursor")
+        self._button("Join", self._join, row, "Join with the next zone")
+        self._button("Delete", lambda: self._edit("delete"), row)
+        layout.addLayout(row)
+        self.zone_critical_only = QCheckBox("Critical only")
+        self.zone_critical_only.setToolTip("Navigate unresolved or invalid choices and incomplete chosen directions")
+        layout.addWidget(self.zone_critical_only)
+        row = QHBoxLayout()
+        self.zone_lock = QPushButton()
+        self.zone_lock.setCheckable(True)
+        self.zone_lock.setIcon(action_icon('unlock'))
+        self.zone_lock.setToolTip("Lock zone editing in the plot (currently unlocked; use Alt+drag)")
+        self.zone_lock.toggled.connect(self._zone_lock_changed)
+        row.addWidget(self.zone_lock)
+        self._button("Next →", self.next_zone, row, "Select the next zone without approving this one")
+        self._button("Approve →", self.approve_zone, row, "Mark this zone reviewed and select the next zone")
+        layout.addLayout(row)
+        return panel
+
+    def _link_annotation_panel(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        self.boundary_list = QListWidget()
+        self.boundary_list.currentItemChanged.connect(self._boundary_item)
+        layout.addWidget(self.boundary_list, 1)
+        self.diagram_holder = QVBoxLayout()
+        layout.addLayout(self.diagram_holder)
+        self.diagram = None
+        row = QHBoxLayout()
+        self._button("Hungarian", self.repropose, row, "Recompute the Hungarian linking proposal")
+        layout.addLayout(row)
+        self.link_critical_only = QCheckBox("Critical only")
+        self.link_critical_only.setToolTip("Navigate unresolved links and automatic links with warnings or invalid bridges")
+        layout.addWidget(self.link_critical_only)
+        row = QHBoxLayout()
+        self._button("Next →", self.next_boundary, row, "Next boundary needing review")
+        self._button("Approve →", self.approve_link, row, "Approve this link and select the next boundary")
+        layout.addLayout(row)
+        row = QHBoxLayout()
+        self._button("Validate", self.validate, row)
+        layout.addLayout(row)
+        return panel
+
+    def _activate_annotation(self, title):
+        self.annotation_mode = title
+        self.annotation_docks[title].raise_()
+        self.panel_docks[title].raise_()
+        self._select_cursor(self.viewers[title].active_side)
+
+    def _annotation_visible(self, title, visible):
+        if visible and not self._closing:
+            self.annotation_mode = title
+            self.panel_docks[title].raise_()
+            self._select_cursor(self.viewers[title].active_side)
+
+    def _zone_lock_changed(self, locked):
+        self.zone_lock.setIcon(action_icon('lock' if locked else 'unlock'))
+        self.zone_lock.setToolTip("Unlock zone editing in the plot" if locked else
+                                  "Lock zone editing in the plot (currently unlocked; use Alt+drag)")
+        self._refresh()
+
     def _choose_dataset(self):
         path = QFileDialog.getExistingDirectory(self, "Dataset folder", self.directory_edit.text())
         if path:
             self.directory_edit.setText(path)
-            self.storage_folder_edit.clear()
 
-    def _choose_storage_folder(self):
-        path = QFileDialog.getExistingDirectory(self, "Storage folder", self.storage_folder_edit.text())
-        if path:
-            self.storage_folder_edit.setText(path)
+    def open_dataset(self, path):
+        previous = self.directory_edit.text()
+        self.directory_edit.setText(str(path))
+        try:
+            self.load_data()
+        except Exception:
+            self.directory_edit.setText(str(self.dataset.directory) if self.dataset is not None else previous)
+            raise
+        self.file_menu.remember(self.dataset)
 
     def _leave_session(self):
+        if self.automatic_task is not None:
+            raise ValueError("Wait for automatic linking to finish or cancel it first")
         if self.session and self.session.dirty:
             self.save()
         self.autosave.stop()
@@ -304,17 +358,16 @@ class RevisionLinkingWindow(QMainWindow):
         dataset = self.dataset
         if dataset is None or dataset.directory != directory:
             dataset = Dataset(directory)
-        storage = self.storage_folder_edit.text()
-        folders = dataset.settings.get("storage_folders", [])
-        if storage != next(iter(folders), ""):
-            dataset.settings["storage_folders"] = [storage, *folders[1:]] if storage else []
-        data = RevisionData(dataset)
+        from bivosia.ui.dataset_access import open_remote_reader
+        data = RevisionData(dataset, remote_reader=open_remote_reader(dataset))
         self.dataset = dataset
+        if self.parameters.store.dataset.directory != dataset.directory:
+            self.parameters.set_dataset(dataset)
         if self.data:
             self.data.close()
         self.data, self.session, self.zone_id, self.job_id = data, None, None, None
         self.link_colors = LinkColors(data)
-        self.setWindowTitle(f"Zone editor · {data.paths['original'].stem}")
+        self.setWindowTitle(f"ZoD detection and linking · {data.paths['original'].stem}")
         self.draft = None
         for player in self.players.values():
             player.configure(data.count, data.videos.source_fps)
@@ -323,11 +376,12 @@ class RevisionLinkingWindow(QMainWindow):
             spin.setRange(0, data.count - 1)
             spin.blockSignals(False)
         self.directory_edit.setText(str(data.directory))
-        self.storage_folder_edit.setText(next(iter(data.dataset.settings.get("storage_folders", [])), ""))
         self._build_plots()
         self._settings_enabled(True)
         self.preview_detection()
         data.dataset.save()
+        self.dataset_windows.add_dataset(dataset)
+        self.dataset_windows.track(self)
         try:
             selected = annotation or data.dataset.annotation
         except ValueError as error:
@@ -337,7 +391,8 @@ class RevisionLinkingWindow(QMainWindow):
             self._load_annotation(selected)
 
     def _settings_enabled(self, enabled):
-        for widget in (self.seed, self.recover, self.gap, self.preview_button, self.start_button):
+        self.parameters.set_editable(enabled)
+        for widget in (self.seed, self.recover, self.gap, self.direction_method, self.preview_button):
             widget.setEnabled(enabled)
 
     def _build_plots(self):
@@ -352,11 +407,10 @@ class RevisionLinkingWindow(QMainWindow):
             SeriesSpec("margin", "Margin quality", self.data.quality, color="#f2df5c"),
             SeriesSpec("assigned_iou", "Assigned mean IoU", self.data.assigned_iou, color="#4fd1c5")])
         self.quality_plot.fit_shared_y_range(include=(0, 1))
-        self.quality_panel = GraphPanel(self.quality_plot, checkable=True, title="Quality")
+        self.quality_panel = GraphPanel(self.quality_plot, checkable=True)
         self.zone_panel = ZonePanel(self.zone_plot)
         self.plots_holder.addWidget(self.overview)
         self.plots_holder.addWidget(self.zone_panel)
-        self.plots_holder.addWidget(self.quality_panel)
         self.feature_plot = GraphTimeline(self.data.count, "Features")
         self.feature_plot.setMinimumHeight(95)
         labels = measure_labels(self.data.measures)
@@ -366,11 +420,15 @@ class RevisionLinkingWindow(QMainWindow):
             if metric == key and direction in ("FORWARD", "REVERSE")))
             for key, label in labels.items())
         groups = tuple(group for group in groups if group.series_keys)
-        self.feature_panel = GraphPanel(self.feature_plot, checkable=True, groups=groups, title="Features")
+        self.feature_panel = GraphPanel(self.feature_plot, checkable=True, groups=groups)
         self.feature_panel.set_reference_lines([], suffix="F solid · R dashed")
-        self.feature_panel.setVisible(bool(groups))
-        self.plots_holder.addWidget(self.feature_panel)
-        self.plots_holder.setSizes((100, 200, 160, 160))
+        for title, panel in (("Quality", self.quality_panel), ("Features", self.feature_panel)):
+            dock = self.panel_docks[title]
+            previous = dock.widget()
+            previous.setParent(None)
+            previous.deleteLater()
+            dock.setWidget(panel)
+        self.plots_holder.setSizes((100, 200))
         self.plots = (self.overview, self.zone_plot, self.quality_plot, self.feature_plot)
         self.player_cursors.set_plots(
             line=(self.quality_plot, self.feature_plot),
@@ -378,16 +436,12 @@ class RevisionLinkingWindow(QMainWindow):
         )
         self.zone_plot.setMinimumHeight(125)
         self.quality_plot.setMinimumHeight(95)
-        for plot in self.plots[1:]:
-            plot.viewChanged.connect(self.overview.set_view)
-            for other in self.plots[1:]:
-                if other is not plot:
-                    plot.viewChanged.connect(other.set_view)
-            self.overview.windowMoved.connect(plot.set_view)
+        self.timeline_group = TimelineGroup(self.overview, self.plots[1:],
+                                            content_heights={self.overview: 0, self.zone_plot: 125})
         for plot in self.plots:
             plot.setToolTip("Click the plot to move the active playback cursor. Drag brackets to adjust the loop. Right-click: zone menu. "
-                            "Double-click a zone to edit it; double-click a square boundary handle to link. "
-                            "Alt+drag a zone or its edges to move or resize it. "
+                            "Click an annotation to select its zone; double-click to focus it. Double-click a square boundary handle to link. "
+                            "When plot editing is unlocked, Alt+drag a zone or its edges to move or resize it. "
             "Ctrl+scroll / drag: quality y-axis. Ctrl+right-click: reset y-axis.")
             plot.cursorSelected.connect(self._plot_cursor_selected)
             plot.frameClicked.connect(lambda frame: self._run(lambda: self._plot_seek(frame)))
@@ -409,33 +463,88 @@ class RevisionLinkingWindow(QMainWindow):
         self.annotation_edit.setText(self.data.dataset.relative(path))
         self._refresh()
 
-    def start_revision(self):
+    def _automatic_choice(self):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Automatic annotation")
+        dialog.setText("An annotation is already open.")
+        dialog.setInformativeText(
+            "Create a new annotation using the displayed ZoD parameters, keeping the current file, "
+            "or fill unresolved links in this annotation, keeping its zones, drafts and approvals.")
+        new = dialog.addButton("New annotation", QMessageBox.ButtonRole.ActionRole)
+        fill = dialog.addButton("Fill unresolved links", QMessageBox.ButtonRole.ActionRole)
+        dialog.addButton(QMessageBox.StandardButton.Cancel)
+        dialog.exec()
+        return 'new' if dialog.clickedButton() == new else 'fill' if dialog.clickedButton() == fill else None
+
+    def run_automatic(self):
         if self.data is None:
             raise ValueError("Load data first")
-        if self.session is not None:
+        if self.automatic_task is not None:
             return
-        path = self.data.dataset.annotation_path(self.annotation_edit.text())
-        if path.exists():
-            self._load_annotation(path)
+        mode = self._automatic_choice() if self.session is not None else 'new'
+        if mode is None:
             return
-        path = self.data.dataset.annotation_path(path, write=True)
-        self.detected = self.data.detect(self.seed.value(), self.recover.value(), self.gap.value())
-        session = RevisionSession.create(self.data.header(self.seed.value(), self.recover.value(), self.gap.value()),
-                                         self.detected.final_zods, self.data.missing_forward, self.data.missing_reverse, self.data.n)
-        session.save(path)
-        self.data.dataset.select_annotation(path)
-        self.session = session
-        self._settings_enabled(False)
-        self._refresh()
-        if session.zones:
-            self.select_zone(session.zones[0].id)
+        self._leave_session()
+        if mode == 'fill':
+            jobs = unresolved_links(self.session)
+            function = lambda: calculate_links(jobs, self.data.mask, self.data.n,
+                                               cancelled=task.isInterruptionRequested)
+        else:
+            path = None
+            if self.session is None and self.annotation_edit.text().strip():
+                candidate = self.data.dataset.annotation_path(self.annotation_edit.text())
+                if not candidate.exists():
+                    path = self.data.dataset.annotation_path(candidate, write=True)
+            settings = dict(theta_quality=self.seed.value(), theta_recovery=self.recover.value(),
+                            theta_gap=self.gap.value(), direction_method=self.direction_method.currentData())
+            function = lambda: prepare_automatic_annotation(
+                self.data.dataset, self.data, self.data.mask, path=path,
+                cancelled=task.isInterruptionRequested, **settings)
+        task = LoggedTask(function, self)
+        self.automatic_task = task
+        self.sidebar_dock.setEnabled(False)
+        for dock in (*self.panel_docks.values(), *self.annotation_docks.values()):
+            dock.setEnabled(False)
+        self.monitor.follow(task)
+        task.connect_callbacks(ready=lambda result: self._automatic_ready(mode, result),
+                               failed=self._automatic_failed, finished=self._automatic_finished)
+        self.statusBar().showMessage("Automatic linking…")
+        task.start()
+
+    def _automatic_ready(self, mode, result):
+        if self.monitor.cancelled:
+            return
+        try:
+            if mode == 'fill':
+                self.session.fill_automatic_links(result)
+                self.save()
+                self._refresh()
+            else:
+                result.save()
+                self._load_annotation(result.path)
+        except Exception as error:
+            self.automatic_task.failed.emit(str(error))
+
+    def _automatic_failed(self, error):
+        self.message.setText(error)
+        QMessageBox.warning(self, "Automatic annotation", error)
+
+    def _automatic_finished(self):
+        self.automatic_task = None
+        self.sidebar_dock.setEnabled(True)
+        for dock in (*self.panel_docks.values(), *self.annotation_docks.values()):
+            dock.setEnabled(True)
+        self.statusBar().showMessage(self.monitor.job_status.text())
+        if self._close_after_automatic:
+            self._close_after_automatic = False
+            QTimer.singleShot(0, self.close)
 
     def new_annotations(self):
         self._leave_session()
         self.session, self.zone_id, self.job_id, self.draft = None, None, None, None
         self._settings_enabled(True)
         self.preview_detection()
-        self.message.setText("Choose thresholds and an annotation filename, then press Start.")
+        self.message.setText("Choose thresholds and an annotation filename, then click Automatic.")
 
     def open_annotations(self):
         if self.data is None:
@@ -447,19 +556,21 @@ class RevisionLinkingWindow(QMainWindow):
 
     def _load_annotation(self, path):
         path = self.data.dataset.annotation_path(path)
-        session = RevisionSession.load(path, self.data.missing_forward, self.data.missing_reverse, self.data.n)
+        session = RevisionSession.load(path, self.data.missing_forward, self.data.missing_reverse, self.data.n,
+                                       temporal_quality=self.data.temporal_quality)
         self.session = session
         self.data.dataset.select_annotation(path)
+        notify_dataset_changed(self.data.dataset)
         self.annotation_edit.setText(self.data.dataset.relative(session.path))
-        self.seed.setValue(session.header["seed"])
-        self.recover.setValue(session.header["recover"])
-        self.gap.setValue(session.header["gap"])
+        self.parameters.set_values({'theta_quality': session.header['seed'],
+                                    'theta_recovery': session.header['recover'], 'theta_gap': session.header['gap'],
+                                    'direction_method': session.direction_method})
         self.detected = self.data.detect(self.seed.value(), self.recover.value(), self.gap.value())
         self.zone_id = self.job_id = self.draft = None
         self._settings_enabled(False)
         self._refresh()
         if session.zones:
-            self.select_zone(session.zones[0].id)
+            self.select_zone(session.zones[0].id, visit=False)
 
     def save(self):
         if self.session is None:
@@ -468,6 +579,8 @@ class RevisionLinkingWindow(QMainWindow):
             path = self.data.dataset.annotation_path(self.annotation_edit.text(), write=True)
             self.session.save(path)
             self.data.dataset.select_annotation(path)
+            notify_dataset_changed(self.data.dataset)
+            self.annotation_edit.setText(self.data.dataset.relative(self.session.path))
             self.statusBar().showMessage(f"Saved {self.session.path.name} · revision {self.session.revision}")
         except Exception as error:
             self.statusBar().showMessage(f"NOT SAVED: {error}")
@@ -476,12 +589,13 @@ class RevisionLinkingWindow(QMainWindow):
 
     def save_as(self):
         if self.session is None:
-            raise ValueError("Press Start first")
+            raise ValueError("Generate or open an annotation first")
         path, _ = QFileDialog.getSaveFileName(self, "Save annotation session", str(self.session.path), "JSON (*.json)")
         if path:
             path = self.data.dataset.annotation_path(path, write=True)
             self.session.save(path)
             self.data.dataset.select_annotation(path)
+            notify_dataset_changed(self.data.dataset)
             self.annotation_edit.setText(self.data.dataset.relative(path))
 
     def _changed(self):
@@ -515,13 +629,16 @@ class RevisionLinkingWindow(QMainWindow):
                     self.boundary_list.setCurrentItem(item)
             self.zone_plot.set_rows(editor_rows(self.data, self.detected, self.session,
                                     on_zone=lambda hit: self._run(lambda: self.select_zone(hit.interval.key)),
+                                    on_select=lambda hit: self._run(lambda: self.select_zone(hit.interval.key, focus=False)),
                                     on_boundary=lambda marker: self._run(lambda: self.select_boundary(marker.payload)),
-                                    on_edit=lambda request: self._run(lambda: self._plot_edit(request))))
+                                    on_edit=lambda request: self._run(lambda: self._plot_edit(request)),
+                                    editable=not self.zone_lock.isChecked()))
             self.overview.set_rows(editor_rows(self.data, self.detected, self.session, overview=True,
                                    on_zone=lambda hit: self._run(lambda: self.select_zone(hit.interval.key)),
+                                   on_select=lambda hit: self._run(lambda: self.select_zone(hit.interval.key, focus=False)),
                                    on_boundary=lambda marker: self._run(lambda: self.select_boundary(marker.payload))))
             self._coloring = None
-            width = max(self.zone_plot.required_left_margin(), self.quality_plot.required_left_axis_width())
+            width = max(self.zone_plot.required_left_margin(), self.quality_plot.required_left_margin())
             for plot in self.plots:
                 plot.set_left_margin(width)
             self.zone_plot.set_selection(("annotations", "zones", self.zone_id) if self.zone_id else None)
@@ -531,28 +648,14 @@ class RevisionLinkingWindow(QMainWindow):
                                                      (f"recovery = {self.recover.value():.2f}", "#f4f4f4")])
             self.undo_button.setEnabled(bool(self.session and self.session.undo_stack))
             self.redo_button.setEnabled(bool(self.session and self.session.redo_stack))
-            self.result_button.setEnabled(bool(self.session and self.session.export))
         finally:
             self._updating = False
         self._render_frames()
 
     def refresh_font_geometry(self):
         """Realign the plot axes after the application font changes."""
-        required = ("plots", "overview", "zone_plot", "quality_plot", "feature_plot")
-        if not all(hasattr(self, name) for name in required):
-            return
-        width = max(
-            self.overview.required_left_margin(),
-            self.zone_plot.required_left_margin(),
-            self.quality_plot.required_left_axis_width(),
-            self.feature_plot.required_left_axis_width(),
-        )
-        for plot in self.plots:
-            plot.set_left_margin(width)
-        self.zone_plot.setMinimumHeight(max(125, self.zone_plot.minimum_content_height()))
-        self.overview.setMinimumHeight(self.overview.minimum_content_height())
-        for plot in self.plots:
-            plot.updateGeometry()
+        if hasattr(self, 'timeline_group'):
+            self.timeline_group.refresh_geometry()
 
     def _zone_item(self, item, previous=None):
         if item is not None and not self._updating:
@@ -562,27 +665,21 @@ class RevisionLinkingWindow(QMainWindow):
         if item is not None and not self._updating:
             self._run(lambda: self.select_boundary(item.data(Qt.ItemDataRole.UserRole)))
 
-    def _tab_changed(self, index):
-        linking = self.tabs.widget(index) is self.boundary_list
-        if hasattr(self, "panel_docks"):
-            title = "Link" if linking else "Zone"
-            self.panel_docks[title].raise_()
-            self._select_cursor(self.viewers[title].active_side)
-
     def _exit_linking(self):
         self.viewers["Link"].stop()
         self.job_id = self.draft = self._drag = None
         self.warnings = []
 
-    def select_zone(self, zone_id, focus=True):
+    def select_zone(self, zone_id, focus=True, *, visit=True):
         if self.session is None:
             return
         zone = next(z for z in self.session.zones if z.id == zone_id)
         self.zone_id = zone.id
-        self.session.visit_zone(zone.id)
-        self.autosave.start(400)
+        if visit:
+            self.session.visit_zone(zone.id)
+            self.autosave.start(400)
         self.viewers["Zone"].stop()
-        self.tabs.setCurrentWidget(self.zone_list)
+        self._activate_annotation("Zone")
         self.panel_docks["Zone"].raise_()
         self._select_cursor("zone")
         self.players["zone"].set_loop(*zone_loop(zone, self.data.count))
@@ -596,7 +693,7 @@ class RevisionLinkingWindow(QMainWindow):
 
     def select_boundary(self, job_id):
         self.viewers["Link"].stop()
-        self.tabs.setCurrentWidget(self.boundary_list)
+        self._activate_annotation("Link")
         self.job_id = job_id
         job = self._job()
         if job is None:
@@ -620,7 +717,7 @@ class RevisionLinkingWindow(QMainWindow):
 
     def _edit(self, operation, **kwargs):
         if self.session is None:
-            raise ValueError("Press Start first")
+            raise ValueError("Generate or open an annotation first")
         old_frame = self.players["zone"].frame
         old_link = deepcopy(self.session.links.get(self.job_id))
         self.session.edit(self.zone_id, operation,
@@ -634,14 +731,16 @@ class RevisionLinkingWindow(QMainWindow):
             jobs = self.session.jobs
             job = self._job() or next((j for j in jobs if j.right.start >= old_frame), jobs[-1] if jobs else None)
             if job:
-                selected_tab = self.tabs.currentWidget()
+                selected_mode = self.annotation_mode
                 self.select_boundary(job.id)
-                self.tabs.setCurrentWidget(selected_tab)
+                self._activate_annotation(selected_mode)
             else:
                 self._exit_linking()
         self._changed()
 
     def _plot_edit(self, request):
+        if self.zone_lock.isChecked():
+            return
         self.zone_id = request.hit.interval.key
         zone = next(z for z in self.session.zones if z.id == self.zone_id)
         if request.action == "move":
@@ -672,7 +771,8 @@ class RevisionLinkingWindow(QMainWindow):
         zones = self.session.zones
         index = next((i for i, z in enumerate(zones) if z.start <= frame <= z.end), None)
         if index is None:
-            menu.addAction("Add zone here", lambda: self._run(lambda: self._edit("add", start=frame, end=frame)))
+            action = menu.addAction("Add zone here", lambda: self._run(lambda: self._edit("add", start=frame, end=frame)))
+            action.setEnabled(not self.zone_lock.isChecked())
             return menu
         zone = zones[index]
 
@@ -688,7 +788,7 @@ class RevisionLinkingWindow(QMainWindow):
         ):
             action = menu.addAction(label)
             action.triggered.connect(lambda checked=False, cb=callback: self._run(cb))
-            action.setEnabled(enabled)
+            action.setEnabled(enabled and not self.zone_lock.isChecked())
             if label.startswith("Join"):
                 action.setToolTip("Includes any gap; keeps this zone's mask direction")
         return menu
@@ -701,12 +801,12 @@ class RevisionLinkingWindow(QMainWindow):
         self.session.set_link_frame(frame, False)
         if self.job_id == f"frame:{frame}":
             self._exit_linking()
-            self.tabs.setCurrentWidget(self.zone_list)
+            self._activate_annotation("Zone")
         self._changed()
 
     def _open_zone_menu(self, frame, position):
         if self.session is None:
-            self.statusBar().showMessage("Press Start to edit zones.", 3000)
+            self.statusBar().showMessage("Generate or open an annotation to edit zones.", 3000)
             return
         menu = self._zone_menu(frame)
         menu.exec(position)
@@ -725,11 +825,13 @@ class RevisionLinkingWindow(QMainWindow):
 
     def _plot_cursor_selected(self, key):
         zone = key.split(":")[0] == "zone"
-        self.tabs.setCurrentWidget(self.zone_list if zone else self.boundary_list)
+        self._activate_annotation("Zone" if zone else "Link")
         self.panel_docks["Zone" if zone else "Link"].raise_()
         self._select_cursor(key)
 
     def _viewer_visible(self, title, visible):
+        if self._closing:
+            return
         if visible:
             self._select_cursor(self.viewers[title].active_side)
             if self.data and hasattr(self, "plots"):
@@ -782,23 +884,41 @@ class RevisionLinkingWindow(QMainWindow):
         else:
             self.data.stop_prefetch(key)
 
-    def review_zone(self):
+    def approve_zone(self):
         if not self.zone_id:
             return
         self._edit("review")
+        self.next_zone()
+
+    def next_zone(self):
+        if not self.zone_id or self.session is None:
+            return
+        if self.zone_critical_only.isChecked():
+            zones = critical_zones(self.session.zones, self.session.missing_forward, self.session.missing_reverse,
+                                   automatic=self.session.header.get('mode') == 'automatic')
+            current = next(z for z in self.session.zones if z.id == self.zone_id)
+            following = next((z for z in zones if z.start > current.start), None)
+            if following is None:
+                self.message.setText("No later critical zones." if zones else "No critical zones.")
+            else:
+                self.select_zone(following.id)
+            return
         index = next(i for i, z in enumerate(self.session.zones) if z.id == self.zone_id)
         if index + 1 < len(self.session.zones):
             self.select_zone(self.session.zones[index + 1].id)
 
     def next_boundary(self):
         if not self.session:
-            raise ValueError("Press Start first")
+            raise ValueError("Generate or open an annotation first")
         links = self.link_colors.links(self.session)
-        pending = [j for j in self.session.jobs if j.id not in links.mappings]
+        critical_only = self.link_critical_only.isChecked()
+        pending = (critical_links(links) if critical_only else
+                   [j for j in self.session.jobs if j.id not in links.mappings])
         if not pending:
-            self.message.setText("All boundaries linked. Review remaining zones, then validate/export.")
+            self.message.setText("No critical links." if critical_only else
+                                 "All boundaries linked. Approve remaining zones, validate, then export in Workflow.")
             return
-        self.tabs.setCurrentWidget(self.boundary_list)
+        self._activate_annotation("Link")
         job = self._job()
         frame = job.right.start if job else self.players["right"].frame
         self.select_boundary(next((j.id for j in pending if j.right.start > frame), pending[0].id))
@@ -863,6 +983,7 @@ class RevisionLinkingWindow(QMainWindow):
                 self._coloring = preview
                 self.overview.set_rows(editor_rows(self.data, self.detected, self.session, overview=True,
                     on_zone=lambda hit: self._run(lambda: self.select_zone(hit.interval.key)),
+                    on_select=lambda hit: self._run(lambda: self.select_zone(hit.interval.key, focus=False)),
                     on_boundary=lambda marker: self._run(lambda: self.select_boundary(marker.payload)),
                     regions=preview.regions if preview else (), links=preview))
             for title, viewer in self.viewers.items():
@@ -962,58 +1083,15 @@ class RevisionLinkingWindow(QMainWindow):
 
     def validate(self):
         if not self.session:
-            raise ValueError("Press Start first")
-        errors = validation_errors(self.session, self.link_colors.links(self.session))
-        QMessageBox.information(self, "Linking validation", "\n".join(errors[:40]) + (f"\n… {len(errors)} issues total" if len(errors) > 40 else "") if errors else "All zones reviewed and boundaries automatically linked or approved. Ready to export.")
-
-    def export_global(self):
-        if not self.session:
-            raise ValueError("Press Start first")
-        errors = validation_errors(self.session, self.link_colors.links(self.session))
-        if errors:
-            raise ValueError("Resolve these before export:\n" + "\n".join(errors[:20]))
-        path, _ = QFileDialog.getSaveFileName(self, "New globally relabeled masks (source masks remain unchanged)",
-                    str(self.data.dataset.linked_masks(self.session.path)), "HDF5 (*.h5)")
-        if not path:
-            return
-        self.data.dataset.export_name(path)
+            raise ValueError("Generate or open an annotation first")
         self.save()
-        self.progress = QProgressDialog("Streaming forward, reverse and preferred global masks…", "Cancel", 0, self.data.count, self)
-        self.progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self.export_worker = ExportWorker(self.session, self.data, path)
-        self.export_worker.progress.connect(lambda value, total: self.progress.setValue(value))
-        self.progress.canceled.connect(self.export_worker.requestInterruption)
-        self.export_worker.completed.connect(self._export_done)
-        self.export_worker.failed.connect(self._export_failed)
-        self.export_worker.start()
-        self.progress.show()
-
-    def _export_done(self, result):
-        self.progress.close()
-        self.session.export = result
-        self.session.dirty = True
-        self._run(self.save)
-        self._refresh()
-        self._run(self.open_result)
-
-    def _export_failed(self, message):
-        self.progress.close()
-        QMessageBox.warning(self, "Export incomplete", message)
-
-    def open_result(self):
-        if not self.session or not self.session.export:
-            raise ValueError("No global mask export for this annotation set")
-        if self.session.export["fingerprint"] != self.session.fingerprint():
-            raise ValueError("This export is stale after annotation changes. Validate and export again.")
-        from bivosia.ui.global_mask_viewer import GlobalMaskViewer
-        window = GlobalMaskViewer(self.data.paths["original"], self.data.dataset.export_path(self.session.export["path"]), self.data.n)
-        window.dataset = self.data.dataset
-        self.result_windows.append(window)
-        window.showMaximized()
+        errors = validation_errors(self.session, self.link_colors.links(self.session))
+        QMessageBox.information(self, "Linking validation", "\n".join(errors[:40]) + (f"\n… {len(errors)} issues total" if len(errors) > 40 else "") if errors else "All zones have accepted direction choices and all boundaries are linked. Ready to export.")
 
     def closeEvent(self, event):
-        if self.export_worker is not None and self.export_worker.isRunning():
-            QMessageBox.information(self, "Export running", "Cancel the export and wait for it to stop before closing.")
+        if self.automatic_task is not None:
+            self._close_after_automatic = True
+            self.monitor.cancel()
             event.ignore()
             return
         try:
@@ -1022,11 +1100,12 @@ class RevisionLinkingWindow(QMainWindow):
             QMessageBox.warning(self, "Annotations not saved", str(error))
             event.ignore()
             return
+        self._closing = True
         if self.data:
             self.data.close()
-        for dock in self.panel_docks.values():
+        for dock in (*self.panel_docks.values(), *self.annotation_docks.values()):
             dock.hide()
-        for window in self.result_windows:
-            window.close()
+        self.processing_dock.hide()
+        self.help_menu.close_windows()
         self.frame_keys.close()
         event.accept()

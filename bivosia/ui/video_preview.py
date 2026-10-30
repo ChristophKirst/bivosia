@@ -30,9 +30,9 @@ class VideoPreview(QWidget):
 
     failed = Signal(str)
 
-    def __init__(self, path, parent=None):
+    def __init__(self, path=None, parent=None, *, show_slider=True, pane=None):
         super().__init__(parent)
-        self.path = Path(path)
+        self.path = Path(path) if path is not None else None
         self.videos = None
         self._closed = False
         layout = QVBoxLayout(self)
@@ -40,17 +40,40 @@ class VideoPreview(QWidget):
         self.player = FramePlayer('frame', '#ff3b4f', selectable=False)
         self.player.frameRequested.connect(self.show_frame)
         layout.addWidget(self.player)
-        self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(0, 0)
-        self.slider.setEnabled(False)
-        self.slider.sliderPressed.connect(self.player.stop)
-        self.slider.valueChanged.connect(self.player.seek)
-        self.player.frameChanged.connect(self._sync_slider)
-        layout.addWidget(self.slider)
-        self.pane = ZoomableVideoLabel()
+        self.slider = None
+        if show_slider:
+            self.slider = QSlider(Qt.Orientation.Horizontal)
+            self.slider.setRange(0, 0)
+            self.slider.setEnabled(False)
+            self.slider.sliderPressed.connect(self.player.stop)
+            self.slider.valueChanged.connect(self.player.seek)
+            self.player.frameChanged.connect(self._sync_slider)
+            layout.addWidget(self.slider)
+        self.pane = pane if pane is not None else ZoomableVideoLabel()
         self.navigation = VideoViewGroup([self.pane])
         layout.addWidget(self.pane, 1)
-        QTimer.singleShot(0, self._load)
+        if self.path is not None:
+            QTimer.singleShot(0, self._load)
+
+    def set_videos(self, videos):
+        """Replace owned readers after the new recording's first frame is readable."""
+        try:
+            image = videos.read('original', 0)
+        except BaseException:
+            videos.close()
+            raise
+        previous, self.videos = self.videos, videos
+        if previous is not None:
+            previous.close()
+        self.player.configure(videos.frame_count, videos.source_fps)
+        if self.slider is not None:
+            self.slider.setRange(0, videos.frame_count - 1)
+            self.slider.setEnabled(True)
+        self.pane.set_image(image_from_bgr(self.render_frame(image, 0)))
+
+    def render_frame(self, image, frame):
+        """Provide the displayed image, optionally specialized by a mask preview."""
+        return image
 
     def _load(self):
         if self._closed:
@@ -58,11 +81,7 @@ class VideoPreview(QWidget):
         videos = None
         try:
             videos = VideoSet({'original': self.path})
-            image = videos.read('original', 0)
-            self.player.configure(videos.frame_count, videos.source_fps)
-            self.slider.setRange(0, videos.frame_count - 1)
-            self.slider.setEnabled(True)
-            self.pane.set_image(image_from_bgr(image))
+            self.set_videos(videos)
         except Exception as error:
             if videos is not None:
                 videos.close()
@@ -80,7 +99,7 @@ class VideoPreview(QWidget):
             return
         try:
             image = self.videos.read('original', frame)
-            self.pane.set_image(image_from_bgr(image))
+            self.pane.set_image(image_from_bgr(self.render_frame(image, frame)))
         except Exception as error:
             self._error(error)
 

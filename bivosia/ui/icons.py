@@ -13,14 +13,17 @@ from PySide6.QtWidgets import QApplication, QStyle
 _ACTIONS = {
     'new': ('document-new', QStyle.StandardPixmap.SP_FileIcon),
     'open': ('document-open', QStyle.StandardPixmap.SP_DialogOpenButton),
+    'save': ('document-save', QStyle.StandardPixmap.SP_DialogSaveButton),
     'recent': ('document-open-recent', QStyle.StandardPixmap.SP_FileDialogBack),
     'workflow': ('view-list-tree', QStyle.StandardPixmap.SP_FileDialogDetailedView),
     'files': ('folder', QStyle.StandardPixmap.SP_DirIcon),
     'edit': ('document-edit', QStyle.StandardPixmap.SP_FileDialogContentsView),
+    'undo': ('edit-undo', QStyle.StandardPixmap.SP_ArrowBack),
+    'redo': ('edit-redo', QStyle.StandardPixmap.SP_ArrowForward),
+    'clear': ('edit-clear', QStyle.StandardPixmap.SP_DialogResetButton),
     'run': ('media-playback-start', QStyle.StandardPixmap.SP_MediaPlay),
     'view': ('document-preview', QStyle.StandardPixmap.SP_FileDialogContentsView),
     'export': ('document-save-as', QStyle.StandardPixmap.SP_DialogSaveButton),
-    'console': ('utilities-terminal', QStyle.StandardPixmap.SP_ComputerIcon),
     'refresh': ('view-refresh', QStyle.StandardPixmap.SP_BrowserReload),
     'cancel': ('process-stop', QStyle.StandardPixmap.SP_BrowserStop),
     'window': ('window-new', QStyle.StandardPixmap.SP_TitleBarMaxButton),
@@ -36,6 +39,11 @@ def application_icon():
 
 
 def action_icon(name):
-    """Use the desktop theme where available and a standard Qt icon otherwise."""
+    """Use desktop action icons and the shared settings gear."""
+    if name == 'settings':
+        return QIcon(str(Path(__file__).with_name('assets') / 'settings.svg'))
+    if name in ('lock', 'unlock'):
+        fallback = QIcon(str(Path(__file__).with_name('assets') / f'{name}.svg'))
+        return QIcon.fromTheme('object-locked' if name == 'lock' else 'object-unlocked', fallback)
     theme, fallback = _ACTIONS[name]
     return QIcon.fromTheme(theme, QApplication.style().standardIcon(fallback))

@@ -1,63 +1,56 @@
-"""Shared two-dimensional scatter display for saved embeddings."""
+"""Selectable Qt scatter displays for saved two- and three-dimensional embeddings."""
 
 __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QImage, QPainter, QPalette
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QStackedWidget
+
+from bivosia.ui.embedding_colors import embedding_colors
+from bivosia.ui.embedding_2d_plot import Embedding2DPlot
 
 
-class EmbeddingPlot(QWidget):
-    """Map supplied coordinates onto a cached scatter image without fitting models."""
+class EmbeddingPlot(QStackedWidget):
+    """Keep a common sample-selection interface for 2D and native Qt 3D plots."""
 
-    def __init__(self, axis_labels=('UMAP 1', 'UMAP 2')):
+    pointSelected = Signal(int)
+
+    def __init__(self):
         super().__init__()
-        self.axis_labels = axis_labels
         self.points = None
-        self._image = None
-        self.setMinimumSize(240, 240)
+        self.colors = np.empty((0, 4), dtype=np.uint8)
+        self.selected = ()
+        self.two = Embedding2DPlot()
+        self.two.pointSelected.connect(self.pointSelected)
+        self.three = None
+        self.addWidget(self.two)
 
-    def set_points(self, points):
+    def set_points(self, points, identities=None, mode='sample'):
         self.points = points
-        self._image = None
-        self.update()
-
-    def resizeEvent(self, event):
-        self._image = None
-        super().resizeEvent(event)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), self.palette().base())
-        box = QRectF(48, 16, max(1, self.width() - 64), max(1, self.height() - 62))
-        painter.setPen(self.palette().color(QPalette.ColorRole.Text))
-        painter.drawRect(box)
-        painter.drawText(QRectF(box.left(), box.bottom() + 8, box.width(), 24),
-                         Qt.AlignmentFlag.AlignCenter, self.axis_labels[0])
-        painter.save()
-        painter.translate(18, box.center().y())
-        painter.rotate(-90)
-        painter.drawText(QRectF(-box.height() / 2, -12, box.height(), 24),
-                         Qt.AlignmentFlag.AlignCenter, self.axis_labels[1])
-        painter.restore()
-        if self.points is None or not len(self.points):
+        self.selected = ()
+        if points is None or not len(points):
+            self.colors = np.empty((0, 4), dtype=np.uint8)
+            self.two.set_points(None, self.colors)
+            if self.three is not None:
+                self.three.set_points(None, None, None, mode)
+            self.setCurrentWidget(self.two)
             return
-        if self._image is None:
-            width, height = max(1, int(box.width()) - 2), max(1, int(box.height()) - 2)
-            low, high = self.points.min(axis=0), self.points.max(axis=0)
-            span = np.maximum(high - low, np.finfo(float).eps)
-            scaled = .025 + .95 * (self.points - low) / span
-            x = np.clip(np.rint(scaled[:, 0] * (width - 1)).astype(int), 0, width - 1)
-            y = np.clip(np.rint((1 - scaled[:, 1]) * (height - 1)).astype(int), 0, height - 1)
-            pixels = np.empty((height, width, 4), dtype=np.uint8)
-            pixels[:] = self.palette().color(QPalette.ColorRole.Base).getRgb()
-            color = self.palette().color(QPalette.ColorRole.Highlight).getRgb()
-            for dy in (-1, 0, 1):
-                for dx in (-1, 0, 1):
-                    pixels[np.clip(y + dy, 0, height - 1), np.clip(x + dx, 0, width - 1)] = color
-            self._image = QImage(pixels.data, width, height, pixels.strides[0],
-                                  QImage.Format.Format_RGBA8888).copy()
-        painter.drawImage(box.topLeft() + QPointF(1, 1), self._image)
+        identities = np.ones(len(points), dtype=int) if identities is None else identities
+        self.colors = embedding_colors(points, identities, mode)
+        if points.shape[1] == 3:
+            if self.three is None:
+                from bivosia.ui.embedding_3d_plot import Embedding3DPlot
+                self.three = Embedding3DPlot()
+                self.three.pointSelected.connect(self.pointSelected)
+                self.addWidget(self.three)
+            self.three.set_points(points, identities, self.colors, mode)
+            self.setCurrentWidget(self.three)
+        else:
+            self.two.set_points(points, self.colors)
+            self.setCurrentWidget(self.two)
+
+    def set_selected(self, indices):
+        self.selected = tuple(indices)
+        self.currentWidget().set_selected(np.asarray(indices, dtype=int))

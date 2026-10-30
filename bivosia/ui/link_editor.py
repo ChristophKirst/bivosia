@@ -7,7 +7,6 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QWidget
-import numpy as np
 
 from bivosia.ui.video_panels import VideoViewGroup, ZoomableVideoLabel, image_from_bgr, overlay_mask
 from bivosia.ui.colors import bgr_colors, identity_colors

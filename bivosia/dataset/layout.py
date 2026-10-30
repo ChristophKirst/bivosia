@@ -245,9 +245,9 @@ class Dataset:
 
     def save(self):
         settings = dict(self.settings)
-        # Location dialogs may save while an editor still holds this dataset object.
+        # Settings dialogs may save while an editor still holds this dataset object.
         current = read_json(self.description) if self.description.is_file() else {}
-        for key in ('storage_folders', 'remote_locations'):
+        for key in ('storage_folders', 'remote_locations', 'processing', 'keypoints'):
             if settings.get(key) == self._saved_settings.get(key):
                 if key in current:
                     settings[key] = current[key]

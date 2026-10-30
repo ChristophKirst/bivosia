@@ -19,29 +19,33 @@ from functools import lru_cache
 
 from bivosia.config import ANALYSIS_DEFAULTS
 from bivosia.analysis.linking import Linker
-from bivosia.analysis.masks import mask_centers
+from bivosia.analysis.mask_features import mask_centers
+from bivosia.analysis.zones_of_disagreement import detect_zods, detection_parameters
 from bivosia.dataset.recording import Recording
-from bivosia.processing.zones import detect_zones, detection_parameters
 
 
 class RevisionData(Recording):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.linking = Linker(self.mask, self.n, self.quality, self.missing, self.evidence.switch_frames)
+        self.linking = (Linker(self.mask, self.n, self.quality, self.missing, self.evidence.switch_frames)
+                        if self.evidence is not None and {'forward', 'reverse'} <= self.videos.masks.keys()
+                        else None)
 
     @lru_cache(maxsize=32)
     def centers(self, source, frame):
         return mask_centers(self.mask(source, frame), self.n)
 
-    def detect(self, seed=ANALYSIS_DEFAULTS['zone_detection']['theta_quality'],
-               recover=ANALYSIS_DEFAULTS['zone_detection']['theta_recovery'], gap=ANALYSIS_DEFAULTS['zone_detection']['theta_gap']):
-        return detect_zones(self.evidence, seed, recover, gap, missing=self.missing)
+    def detect(self, seed=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_quality'],
+               recover=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_recovery'], gap=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_gap']):
+        return detect_zods(self.evidence, seed, theta_recovery=recover,
+                           theta_gap=gap, missing_signal=self.missing)
 
-    def header(self, seed, recover, gap):
-        return detection_parameters(seed, recover, gap)
+    def header(self, seed, recover, gap, *,
+               direction_method=ANALYSIS_DEFAULTS['zones_of_disagreement']['direction_method']):
+        return detection_parameters(seed, recover, gap, direction_method=direction_method)
 
     def close(self):
         self.centers.cache_clear()
-        if hasattr(self, "linking"):
+        if getattr(self, "linking", None) is not None:
             self.linking.clear()
         super().close()

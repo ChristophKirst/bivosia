@@ -22,7 +22,7 @@ import logging
 
 import numpy as np
 
-from bivosia.analysis.key_frames import (
+from bivosia.analysis.keyframes import (
     add_frame, cropped_frames, fixed_frames, move_frame, paint_mask, propose_frames,
     validate_crop, validate_mask, validate_key_frames,
 )

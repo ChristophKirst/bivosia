@@ -12,8 +12,8 @@ import numpy as np
 
 from bivosia.dataset.arrays import MASK_MISSING, MASK_QUALITY, MASK_SWITCH, read_array
 from bivosia.dataset.jsonio import read_json
-from bivosia.analysis.zone_detection import ZodEvidence
-from bivosia.analysis.masks import permutation_change_measures
+from bivosia.analysis.zones_of_disagreement import ZodEvidence
+from bivosia.analysis.quality import permutation_change_measures
 
 
 def load_mask_measures(

@@ -10,26 +10,30 @@ import cv2
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 
-from bivosia.analysis.key_frames import accept_masks, combine_masks, edited_predictions
-from bivosia.analysis.mask_cleanup import clean_label_mask
+from bivosia.analysis.keyframes import accept_masks, combine_masks, edited_predictions
+from bivosia.analysis.masks import clean_label_mask
 from bivosia.config import ANALYSIS_DEFAULTS
 from bivosia.dataset.key_frames import MaskDraft
 from bivosia.dataset.mask_cleanup import save_cleaned_key_frame
 from bivosia.processing.key_frames import predict_key_frames
 from bivosia.ui.colors import bgr_colors, identity_colors
+from bivosia.ui.icons import action_icon
 from bivosia.ui.mask_canvas import MaskCanvas
+from bivosia.ui.mask_cleanup_dialog import MaskCleanupDialog
 from bivosia.ui.mask_tools import MaskTools
-from bivosia.ui.task import Task
+from bivosia.ui.task import LoggedTask
 from bivosia.ui.video_panels import MaskDisplayControl, VideoViewGroup, image_from_bgr
+from bivosia.ui.window_manager import notify_dataset_changed
 
 
 class MaskEditor(QWidget):
     saved = Signal(int)
     navigate = Signal(int)
     busyChanged = Signal(bool)
+    predictionStarted = Signal(object)
 
     def __init__(self, predictor):
         super().__init__(None, Qt.WindowType.Window)
@@ -41,6 +45,7 @@ class MaskEditor(QWidget):
         self.review = None
         self.cleanup_draft = None
         self.cleanup_parameters = None
+        self.cleanup_options = dict(ANALYSIS_DEFAULTS['masks']['cleanup'])
         self.pending_model = None
         self.unavailable_reason = ""
         self.resize(1100, 760)
@@ -64,11 +69,15 @@ class MaskEditor(QWidget):
         self.radius.setToolTip("Brush radius in image pixels")
         row.addWidget(self.radius)
         self.clear_points_button = self._button("Clear points", self.clear_points, row)
+        self.clear_points_button.setIcon(action_icon('clear'))
         self.undo_button = self._button("Undo", lambda: self.history(False), row)
+        self.undo_button.setIcon(action_icon('undo'))
         self.undo_button.setShortcut("Ctrl+Z")
         self.redo_button = self._button("Redo", lambda: self.history(True), row)
+        self.redo_button.setIcon(action_icon('redo'))
         self.redo_button.setShortcut("Ctrl+Shift+Z")
         self.save_button = self._button("Save", self.save, row)
+        self.save_button.setIcon(action_icon('save'))
         self.save_button.setShortcut("Ctrl+S")
         row.addStretch()
         row = QHBoxLayout()
@@ -81,6 +90,12 @@ class MaskEditor(QWidget):
         self.approve_button.setToolTip("Apply all remaining proposals as one undoable edit")
         self.cleanup_button = self._button("Clean up", self.clean_up, row)
         self.cleanup_button.setToolTip("Preview contour cleanup in full-resolution pixels; save a separate copy")
+        self.cleanup_settings_button = QToolButton()
+        self.cleanup_settings_button.setIcon(action_icon('settings'))
+        self.cleanup_settings_button.setToolTip('Mask cleanup settings')
+        self.cleanup_settings_button.setAccessibleName('Mask cleanup settings')
+        self.cleanup_settings_button.clicked.connect(self.edit_cleanup_settings)
+        row.addWidget(self.cleanup_settings_button)
         self.discard_button = self._button("Discard", self.discard_preview, row)
         self.status = QLabel()
         row.addWidget(self.status, 1)
@@ -192,7 +207,7 @@ class MaskEditor(QWidget):
         """Create an independently editable cleanup preview without changing original masks."""
         if self.busy or self.draft is None or self.cleanup_draft is not None:
             return
-        parameters = dict(ANALYSIS_DEFAULTS['mask_cleanup'])
+        parameters = self.cleanup_options.copy()
         try:
             cleaned = clean_label_mask(self.active_draft.mask, **parameters)
         except (ValueError, TypeError) as error:
@@ -204,6 +219,11 @@ class MaskEditor(QWidget):
         self.tools.set_mode("Select")
         self.status.setText("Cleaned preview · Save writes a separate copy")
         self.render()
+
+    def edit_cleanup_settings(self):
+        dialog = MaskCleanupDialog(self.cleanup_options, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.cleanup_options = dialog.parameters.values
 
     def _update_preview(self):
         self.review = MaskDraft(combine_masks(self.draft.mask, self.predictions)) if self.predictions else None
@@ -284,11 +304,11 @@ class MaskEditor(QWidget):
         rgb = cv2.cvtColor(self.image, cv2.COLOR_BGR2RGB)
         prompts = deepcopy(self.draft.prompts)
         image_key = (str(self.session.dataset.video), self.frame)
-        self.worker = Task(lambda: predict_key_frames(self.predictor, rgb, prompts, animal=animal,
-                                               image_key=image_key), self)
-        self.worker.ready.connect(self._prediction_ready)
-        self.worker.failed.connect(self._error)
-        self.worker.finished.connect(self._prediction_finished)
+        worker = LoggedTask(lambda: predict_key_frames(self.predictor, rgb, prompts, animal=animal,
+                                               image_key=image_key, cancelled=worker.isInterruptionRequested), self)
+        self.worker = worker
+        self.predictionStarted.emit(worker)
+        worker.connect_callbacks(ready=self._prediction_ready, failed=self._error, finished=self._prediction_finished)
         self.controls.setEnabled(False)
         self.canvas.setEnabled(False)
         self.busyChanged.emit(True)
@@ -301,7 +321,6 @@ class MaskEditor(QWidget):
         self.tools.set_mode("Select")
 
     def _prediction_finished(self):
-        self.worker.deleteLater()
         self.worker = None
         self.controls.setEnabled(True)
         self.canvas.setEnabled(True)
@@ -348,6 +367,7 @@ class MaskEditor(QWidget):
         self.clear_points_button.setEnabled(not cleaning)
         self.tools.modes['Prompt'].setEnabled(not cleaning)
         self.cleanup_button.setEnabled(not cleaning)
+        self.cleanup_settings_button.setEnabled(not cleaning)
         self.discard_button.setEnabled(cleaning or reviewing)
         self.save_button.setEnabled(cleaning or not reviewing)
         self.save_button.setText("Save cleaned" if cleaning else "Save")
@@ -368,6 +388,7 @@ class MaskEditor(QWidget):
                 QMessageBox.warning(self, "Save cleaned", str(error))
                 return False
             self.cleanup_draft.mark_saved()
+            notify_dataset_changed(self.session.dataset)
             self.status.setText(f"Saved · {path.name}")
             self.render()
             return True
@@ -383,6 +404,7 @@ class MaskEditor(QWidget):
         self.status.setText("Saved")
         self.render()
         self.saved.emit(self.frame)
+        notify_dataset_changed(self.session.dataset)
         return True
 
     def can_leave(self):

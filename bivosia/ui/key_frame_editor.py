@@ -18,43 +18,42 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
-import cv2
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+    QFormLayout, QHBoxLayout, QLabel,
     QMenu, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from bivosia.ui.icons import action_icon
 from bivosia.config import KEY_FRAME_BACKENDS
-from bivosia.dataset.layout import Dataset
-from bivosia.dataset.key_frames import KeyFrameSession
-from bivosia.dataset.video import VideoSet
+from bivosia.dataset.key_frame_recording import KeyFrameRecording
 from bivosia.segmentation.image import create_segmenter
-from bivosia.ui.colors import KEY_FRAME_COLORS, bgr_colors, identity_colors
+from bivosia.ui.colors import bgr_colors, identity_colors
 from bivosia.ui.dock_panel import PanelHost, PanelSplitter
 from bivosia.ui.frame_previews import FramePreviews
 from bivosia.ui.mask_editor import MaskEditor
 from bivosia.ui.player import FramePlayer
-from bivosia.ui.plot_models import CursorSpec, LegendGroup, RowSpec
 from bivosia.ui.key_frame_model import KeyFrameModelSelector
+from bivosia.ui.key_frame_view import configure_key_frame_view, key_frame_cursors, key_frame_row
+from bivosia.ui.processing_panel import ProcessingPanel
 from bivosia.ui.task import Task
+from bivosia.ui.task_monitor import TaskMonitor
 from bivosia.ui.video_panels import (
     MaskDisplayControl, VideoViewGroup, ZoomableVideoLabel, image_from_bgr,
 )
 from bivosia.ui.zone_plot import ZonePanel, ZoneTimeline
+from bivosia.ui.window_manager import notify_dataset_changed
 
 
 class KeyFrameWindow(PanelHost):
-    def __init__(self, dataset=None, *, model=None, checkpoint=None, device="auto", parameters=None, animals=2):
+    def __init__(self, dataset, *, model=None, checkpoint=None, device="auto", parameters=None, animals=2):
         super().__init__()
         self.statusBar()
         self.setWindowTitle("Key frames")
         self.resize(1350, 850)
         self.session = self.videos = self.dataset = None
+        self.recording = None
         self.selected = None
         self.preview_task = None
-        self.preview_queue = []
         model = model or next(iter(KEY_FRAME_BACKENDS))
         self.mask_editor = MaskEditor(create_segmenter(model, checkpoint, device, parameters))
         self.mask_editor.saved.connect(self._labeled)
@@ -63,17 +62,9 @@ class KeyFrameWindow(PanelHost):
         self.setCentralWidget(split)
         sidebar = QWidget()
         left = QVBoxLayout(sidebar)
-        self.path = QLineEdit()
-        self.path.setReadOnly(True)
-        row = QHBoxLayout()
-        row.addWidget(self.path, 1)
-        open_button = QPushButton("Open")
-        open_button.setIcon(action_icon('open'))
-        open_button.clicked.connect(self.choose_dataset)
-        row.addWidget(open_button)
-        left.addWidget(QLabel("Dataset"))
-        left.addLayout(row)
-        self.model_selector = KeyFrameModelSelector(model, checkpoint, device, parameters)
+        self.processing = ProcessingPanel(dataset, monitor=TaskMonitor(), require_dataset=False)
+        self.mask_editor.predictionStarted.connect(self.processing.monitor.follow)
+        self.model_selector = KeyFrameModelSelector(self.processing.target, model, checkpoint, device, parameters)
         left.addWidget(self.model_selector)
         self.mask_editor.busyChanged.connect(self.model_selector.set_busy)
         self.model_selector.changed.connect(self._sync_predictor)
@@ -122,7 +113,10 @@ class KeyFrameWindow(PanelHost):
             button.clicked.connect(callback)
             row.addWidget(button)
         left.addLayout(row)
-        split.addWidget(sidebar)
+        sidebar_host = PanelHost()
+        sidebar_host.setCentralWidget(sidebar)
+        self.processing.dock(sidebar_host)
+        split.addWidget(sidebar_host)
         right = PanelSplitter(Qt.Orientation.Vertical)
         split.addWidget(right)
         video = QWidget()
@@ -153,16 +147,10 @@ class KeyFrameWindow(PanelHost):
         split.setSizes([340, 1000])
         right.setSizes([650, 130])
         self.settings.setEnabled(False)
-        if dataset is not None:
-            self.load_dataset(dataset)
+        self.load_dataset(dataset)
 
     def error(self, error):
         QMessageBox.warning(self, "Key frames", str(error))
-
-    def choose_dataset(self):
-        path = QFileDialog.getExistingDirectory(self, "Dataset", self.path.text())
-        if path:
-            self.load_dataset(Dataset(path))
 
     def _sync_predictor(self):
         parameters = self.model_selector.parameters
@@ -181,30 +169,22 @@ class KeyFrameWindow(PanelHost):
     def load_dataset(self, dataset):
         if not self.can_leave():
             return False
-        videos = None
         try:
-            videos = VideoSet({"original": dataset.video})
-            image = videos.read("original", 0)
-            session = KeyFrameSession(dataset, videos.frame_count, image.shape[:2], self.animals.value())
+            recording = KeyFrameRecording(dataset, animals=self.animals.value())
         except Exception as error:
-            if videos is not None:
-                videos.close()
             self.error(error)
             return False
         self.mask_editor.hide()
         self.mask_editor.session = self.mask_editor.draft = None
         self.player.stop()
-        if self.videos is not None:
-            self.videos.close()
-        self.dataset, self.videos, self.session = dataset, videos, session
-        # Serialize decoder access for playback and asynchronous thumbnails.
-        self.videos.prefetch("original", [])
-        self.path.setText(str(dataset.directory))
+        if self.recording is not None:
+            self.recording.close()
+        self.recording = recording
+        session = recording.session
+        self.dataset, self.videos, self.session = dataset, recording.videos, session
+        self.processing.set_dataset(dataset)
         self.setWindowTitle(f"Key frames · {dataset.directory.name}")
-        self.previews.images.clear()
-        self.timeline.frame_count = session.frame_count
-        self.timeline.reset_zoom()
-        self.player.configure(session.frame_count, videos.source_fps)
+        configure_key_frame_view(recording, self.player, self.timeline, self.previews)
         for spin in (self.crop_start, self.crop_end, self.position):
             spin.setRange(0, session.frame_count - 1)
         self.selected = session.frames[0]
@@ -234,53 +214,33 @@ class KeyFrameWindow(PanelHost):
         self.position.setToolTip("Labeled frames and crop boundaries are fixed" if self.selected in fixed
                                  else "Move this unlabeled proposal")
         self.progress.setText(f"{sum(f in session.masks for f in session.frames)} / {len(session.frames)} labeled")
-        colors = bgr_colors(identity_colors(session.animals, .27))
-        self.previews.set_frames(session.frames, session.masks, session.crop, colors)
+        self.previews.set_session(session)
         self.previews.select(self.selected)
-        legend = LegendGroup(items=tuple((label, KEY_FRAME_COLORS[key]) for key, label in (
-            ("proposed", "Unlabeled"), ("labeled", "Labeled"), ("boundary", "Boundary"))))
-        self.timeline.set_rows([RowSpec("key_frames", "Frames", legend=(legend,))])
+        self.timeline.set_rows([key_frame_row('Frames')])
         self._cursors()
         self.add_button.setEnabled(self._can_add(self.player.frame))
-        self.preview_queue = [f for f in session.frames if f not in self.previews.images]
         self._next_preview()
 
     def _cursors(self):
-        session = self.session
-        cursors = [CursorSpec("playhead", self.player.frame)]
-        for frame in session.frames:
-            boundary, labeled = frame in session.crop, frame in session.masks
-            color = KEY_FRAME_COLORS["labeled" if labeled else "proposed"]
-            cursors.append(CursorSpec(f"key_frame:{frame}", frame, color, line=False, level=1,
-                                      draggable=not (boundary or labeled),
-                                      selectable=True,
-                                      outline=KEY_FRAME_COLORS["boundary"] if boundary else None))
-        self.timeline.set_cursors(cursors)
+        self.timeline.set_cursors(key_frame_cursors(self.session, self.player.frame, editable=True))
         self.timeline.set_active_cursor(f"key_frame:{self.selected}")
 
     def _next_preview(self):
-        if self.preview_task is not None or not self.preview_queue:
+        if self.preview_task is not None:
             return
-        frame = self.preview_queue.pop(0)
-
-        def read_thumbnail():
-            image = self.videos.read("original", frame)
-            scale = min(160 / image.shape[1], 100 / image.shape[0])
-            return frame, cv2.resize(image, (max(1, round(image.shape[1] * scale)),
-                                             max(1, round(image.shape[0] * scale))))
-
+        read_thumbnail = self.previews.next_thumbnail()
+        if read_thumbnail is None:
+            return
         self.preview_task = Task(read_thumbnail, self)
-        self.preview_task.ready.connect(lambda result: self.previews.set_image(*result))
-        self.preview_task.failed.connect(self._preview_error)
-        self.preview_task.finished.connect(self._preview_finished)
+        self.preview_task.connect_callbacks(ready=self.previews.accept_thumbnail,
+                                            failed=self._preview_error, finished=self._preview_finished)
         self.preview_task.start()
 
     def _preview_error(self, message):
-        self.preview_queue.clear()
+        self.previews.clear_pending()
         self.statusBar().showMessage(message)
 
     def _preview_finished(self):
-        self.preview_task.deleteLater()
         self.preview_task = None
         QTimer.singleShot(0, self._next_preview)
 
@@ -442,6 +402,7 @@ class KeyFrameWindow(PanelHost):
             self.error(error)
             return False
         self.statusBar().showMessage("Saved", 3000)
+        notify_dataset_changed(self.session.dataset)
         return True
 
     def can_leave(self):
@@ -464,11 +425,13 @@ class KeyFrameWindow(PanelHost):
             event.ignore()
             return
         self.player.stop()
-        self.preview_queue.clear()
+        self.previews.set_video(None)
         self.model_selector.shutdown()
+        self.processing.shutdown()
         self.mask_editor.predictor.close()
         self.mask_editor.close()
-        if self.videos is not None:
-            self.videos.close()
+        if self.recording is not None:
+            self.recording.close()
+            self.recording = None
             self.videos = None
         event.accept()

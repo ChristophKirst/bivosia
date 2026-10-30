@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 
 from bivosia.analysis.linking import LinkResult
-from bivosia.analysis.masks import mask_centers
+from bivosia.analysis.mask_features import mask_centers
 from bivosia.dataset.video import VideoBuffer
 from bivosia.ui.link_editor import MaskPane
 from bivosia.ui.colors import identity_colors

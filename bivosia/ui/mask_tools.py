@@ -57,11 +57,11 @@ class MaskTools(QToolBar):
         self.group = QActionGroup(self)
         self.group.setExclusive(True)
         self.modes = {}
-        for name, tip in (("Select", "Click a mask to select its animal"),
+        for name, tip in (("Pan", "Left-drag to move the image"),
+                          ("Select", "Click a mask to select its animal"),
                           ("Prompt", "Click to add a point for the selected animal"),
                           ("Paint", "Left-drag to paint the selected animal"),
-                          ("Erase", "Left-drag to erase mask pixels"),
-                          ("Pan", "Left-drag to move the image")):
+                          ("Erase", "Left-drag to erase mask pixels")):
             action = QAction(mode_icon(name, self.palette().windowText().color()), name, self)
             action.setCheckable(True)
             action.setToolTip(tip)

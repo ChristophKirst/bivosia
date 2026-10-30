@@ -2,7 +2,7 @@
 
 # BiVOSIA guide
 
-**Video → Key frames → VOS → Mask analysis → Review & link → Export**
+**Video → Key frames → VOS → Mask analysis → ZoD detection and linking → Export**
 
 [Get started](#installation) · [Workflow](#datasets-and-the-application-workflow) ·
 [Examples](#command-line-examples-and-batch-processing) · [Authors](#authors) · [Paper](#paper)
@@ -30,18 +30,27 @@ Choose **File → New dataset** or **Open dataset**, then open **Workflow**.
 
 | Step | What to do |
 |---|---|
-| **1 · Video** | Select the experimental recording. |
+| **1 · Video** | Select the recording through the row’s gear; **Open Video** plays it. |
 | **2 · Key frames** | Label the animals at both crop endpoints. |
 | **3 · VOS** | Track masks forward and backward with Cutie. |
-| **4 · Mask analysis** | Calculate agreement between the two directions. |
-| **5 · Review & link** | Review disagreements and verify animal identities. |
+| **4 · Mask analysis** | Open its window, select Local or SSH, then Run to calculate agreement. |
+| **5 · ZoD detection and linking** | Detect and review disagreements; verify animal identities. |
 | **6 · Export** | Validate and save reviewed masks for further analysis. |
 
 **Green** = outputs available · **Amber** = work missing · **Purple** = review needed.
 
 - **View files:** inspect files, arrays and video; preview text or video by clicking.
-- **Console:** follow job logs and progress, or request cancellation.
+- **Dataset and video gear:** shows the dataset folder, selects the experimental video and keypoints, and opens **Locations…** for local/remote storage settings.
+- **Viewer** in Workflow, or **View analysis** in the main window: open the video with available masks, quality scores and zones.
+  Missing results leave their plots empty; mask analysis is not required to open the viewer.
+- **Open Masks:** select Local or SSH, set the animal count, and Run.
+  Each processing window selects its own execution location.
+- **Gear buttons:** open a step’s parameters without its editor. Settings are shared with the editor and saved in the dataset.
+- **Run:** check steps in the table’s rightmost column, adjust their settings with the gears, and use **Run** at the bottom of that column. Choose one Local/SSH location in Processing. Required inputs may come from saved results or selected earlier steps.
+- **Processing panels:** Keyframes, VOS, Mask analysis and Features have detachable controls. ZoDs uses the same progress, logs and cancellation for Automatic. Drag the Processing title bar out to detach it.
 - **Recent datasets:** reopen a dataset. Click a window entry to bring it forward.
+- **Viewer menus:** use **File** to change datasets, open **Workflow**, **View files**, or the main BiVOSIA window. **Help** has the same documentation and About dialog as the main window.
+- **Text size:** Ctrl+plus/minus adjusts the font and remembers it for the next launch. Ctrl+0 restores the system default.
 
 <img src="../bivosia/ui/assets/bivosia-graphic.png" width="520" alt="Forward and reverse masks compared at the same frame" />
 
@@ -51,8 +60,13 @@ Choose **File → New dataset** or **Open dataset**, then open **Workflow**.
 2. Inspect proposals; accept or reject them. Use **Paint / Erase** to correct masks.
 3. **Save** both crop endpoints with consistent animal IDs.
 
-**Save** includes accepted masks, not pending proposals. Optional **Clean up**
-creates a separate preview; **Save cleaned** preserves the original annotations.
+**Save** includes accepted masks, not pending proposals. **Undo** (Ctrl+Z) reverses edits.
+Optional **Clean up** creates a separate preview; its gear sets the contour-area limits
+and overlap kernel. **Save cleaned** preserves the original annotations.
+
+Key-frame parameters appear above the frame list. The detachable **Processing** panel
+at the bottom left selects Local/SSH and shows prediction progress and logs.
+Start predictions with the mask editor’s prediction buttons.
 
 [Annotation controls and cleanup](REFERENCE.md#key-frame-annotation)
 
@@ -70,28 +84,51 @@ creates a separate preview; **Save cleaned** preserves the original annotations.
 
 ## Zone review, identity linking and export
 
-After **Mask analysis → Run**, open **ZoD annotation and linking → Open editor**.
+After **Open Masks → Run**, choose **Open ZoDs**.
 
-1. **Preview** detection, then **Start** or resume a saved annotation.
-2. Review each Zone of Disagreement (ZoD): choose **forward**, **reverse** or **invalid**.
-3. **Next link →** checks identity assignments; **Approve →** confirms them.
-4. **Validate → Export…** saves the reviewed masks. **Result** opens the export.
+For automatic processing, select **ZoD detection and linking** and **Export** in Workflow.
+Automatic direction choices and links are saved as a new annotation, without marking them manually reviewed.
+
+1. **Preview** detection, then **Automatic** to generate and save directions and links.
+2. In **Zone annotation**, choose **forward**, **reverse** or **invalid**. **Next →** navigates; **Approve →** marks the zone reviewed and advances.
+3. In **Linking annotation**, **Next →** checks identity assignments; **Approve →** confirms them.
+4. **Validate** in Linking annotation, then select **Export** in Workflow and **Run**.
+
+**Critical only** in either annotation panel filters **Next →** and **Approve →** navigation.
+It includes unresolved choices, invalid zones, incomplete chosen directions, and automatic links with warnings or invalid bridges.
+Ordinary automatic results are skipped. Approving a link acknowledges its warnings; invalid zones remain available for inspection.
+
+**View → Quality / Features** opens the optional plot panels, hidden by default. All detachable panels can be closed and reopened through **View**. The editor shares the viewer’s **File**, **Settings** and **Help** menus.
+
+The detection and annotation panels are detachable. Click a plotted annotation to select its zone and update the fields. **Update** applies Start/End changes; the lock button controls plot editing with Alt+drag.
 
 Changed annotations need a new export. Source masks remain unchanged.
+Opening the editor or viewer loads saved links without generating proposals or changing review status.
+With an annotation open, **Automatic** asks whether to create a new file or fill unresolved links while preserving zones, drafts and approvals. Progress, logs and cancellation appear in **Processing**; cancelled calculations save no partial results.
 
 [Review and export details](REFERENCE.md#zone-review-identity-linking-and-export)
 
 ## Mask features and UMAP
 
-- Open **Workflow → Mask features** with a reviewed consensus export.
+- Open **Workflow → Open features** with a validated annotation.
+- **Mask source: Automatic** uses a matching export if available, otherwise forward/reverse masks plus the saved annotation. You can select either source explicitly.
 - Set the **Zernike radius** to contain each animal; **Run** calculates features and UMAP.
+- Masks exceeding the radius are skipped individually, with frame and animal warnings in the console.
+- **UMAP dimensions** selects 2D (default) or 3D. Each embedding is saved separately.
+- Select **Start frame**, **End frame** and **Every Nth frame** before extraction. Defaults use all valid masks.
+- **Downsample factor** defaults to 1; 2 halves width and height before preprocessing. Radius and other pixel-based settings use the downsampled resolution.
+- UMAP and video sit side by side, with annotations and sample dots below. Click a point or dot to outline its mask; click a mask to highlight its sample. Selecting a frame highlights its samples.
+- **Color by** switches between a shared sample gradient and animal identities.
+- Zoom/pan the 2D plot, then **Show masks** to open a separate grid of representative masks. Empty cells stay blank.
 - **Preprocess masks** and **Z-score features before UMAP** are optional, initially off.
 
 [Parameters and saved results](REFERENCE.md#mask-features-and-umap)
 
 ## Keypoint alignment
 
-- Add keypoints and their original image resolution to `dataset.json`.
+- In **Dataset settings → Select keypoints…**, select a SLEAP analysis HDF5 file
+  and enter its original image height and width. Save validates the file, copies
+  it into the dataset's configured keypoints folder if needed, and updates `dataset.json`.
 - Open **Keypoint alignment**, choose the annotation and keypoints, then run.
 - SLEAP analysis files are supported. Invalid frames are skipped; ties are recorded.
 
@@ -114,12 +151,16 @@ Example settings:
 1. Follow [Remote setup](REMOTE_SETUP.md) to prepare Python and copy BiVOSIA to the host.
 2. **Settings → Remote installations…:** enter **Host**, **Python** and **Code**.
    Optionally set a **Default data folder** for dataset subfolders.
-3. Select **Run on → SSH** in the editor; install models on that target if needed.
+3. Select **SSH** in the editor’s processing panel; install models on that target if needed.
 
 **View files → Locations…** manages mounted folders and remote dataset locations.
-**SAM** sends the current image and prompts. **VOS → Run** uploads the video and saved
-key frames first; identical files are reused and conflicting files are never overwritten.
-**Check** reports required uploads without transferring them. Registration does not copy code.
+- **Processing:** select Local or SSH for an editor job, or for the whole automatic workflow.
+- **View files:** right-click files, categories or job folders to copy, move or delete their contents.
+- **Consolidate…:** copy dataset files to one location; choose which copy to use for conflicts. Job records stay where they ran.
+- Run checks the selected location. Missing inputs open the dataset viewer for synchronization; the job continues after copying and any conflict choices.
+- Remote masks can be viewed frame by frame without downloading full files.
+- Progress and logs appear in the processing panel. Workflow availability includes remote results.
+- **SAM** sends only its current image and prompts. Registration does not copy code.
 
 ## Data formats and storage
 

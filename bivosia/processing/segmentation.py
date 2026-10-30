@@ -20,7 +20,7 @@ import time
 
 import numpy as np
 
-from bivosia.analysis.segmentation import output_mask, output_shape, key_frame_intervals
+from bivosia.analysis.keyframes import output_mask, output_shape, key_frame_intervals
 from bivosia.config import VOS_BACKENDS
 from bivosia.dataset.key_frames import KeyFrameSession
 from bivosia.dataset.mask_output import check_output, output_files

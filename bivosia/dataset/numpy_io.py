@@ -45,16 +45,22 @@ def inspect_npz(path):
 
 @contextmanager
 def array_output(path, shape, dtype, *, fill=None):
-    """Commit a flushed array on success; retain partial output on failure."""
+    """Commit a flushed array on success and discard failed partial output."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = auxiliary_path(path, "partial")
-    array = np.lib.format.open_memmap(partial, mode="w+", dtype=dtype, shape=shape)
+    with partial.open('wb'):
+        pass
     try:
-        if fill is not None:
-            array[:] = fill
-        yield array
-        array.flush()
-    finally:
-        array._mmap.close()
-    partial.replace(path)
+        array = np.lib.format.open_memmap(partial, mode="w+", dtype=dtype, shape=shape)
+        try:
+            if fill is not None:
+                array[:] = fill
+            yield array
+            array.flush()
+        finally:
+            array._mmap.close()
+        partial.replace(path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise

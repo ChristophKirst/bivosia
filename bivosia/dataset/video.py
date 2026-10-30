@@ -110,12 +110,14 @@ class VideoBuffer:
 
 
 class VideoSet:
-    def __init__(self, paths: dict[str, Path]) -> None:
-        self.masks = {}
+    def __init__(self, paths: dict[str, Path], *, masks=None) -> None:
+        self.masks = dict(masks or {})
         self.buffers = {}
         self.readers = {}
         try:
             for name, path in paths.items():
+                if name in self.masks:
+                    continue
                 if path.suffix.lower() in folder_suffixes('masks'):
                     self.masks[name] = open_masks(path, require_valid=False, direction=name)
                 else:

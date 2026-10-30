@@ -76,9 +76,7 @@ class ModelInstallDialog(QDialog):
         self.close_button.setEnabled(False)
         install = self.remote.install_model if self.remote else install_local
         self.task = Task(lambda: install(model, self.message.emit), self)
-        self.task.ready.connect(self._ready)
-        self.task.failed.connect(self.status.setText)
-        self.task.finished.connect(self._finished)
+        self.task.connect_callbacks(ready=self._ready, failed=self.status.setText, finished=self._finished)
         self.task.start()
 
     def _ready(self, result):
@@ -87,7 +85,6 @@ class ModelInstallDialog(QDialog):
         self.installed.emit(result)
 
     def _finished(self):
-        self.task.deleteLater()
         self.task = None
         self.model.setEnabled(True)
         self.install_button.setEnabled(True)

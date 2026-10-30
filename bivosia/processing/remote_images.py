@@ -3,7 +3,7 @@
 Examples
 --------
 >>> import numpy as np
->>> from bivosia.processing.remote_images import pack_arrays, unpack_arrays
+>>> from bivosia.dataset.array_transport import pack_arrays, unpack_arrays
 >>> source = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
 >>> np.array_equal(unpack_arrays(pack_arrays(rgb=source))['rgb'], source)
 True
@@ -14,29 +14,13 @@ __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
 from contextlib import redirect_stdout
-from io import BytesIO
-import base64
 import json
 import sys
 
-import numpy as np
-
+from bivosia.dataset.array_transport import pack_arrays, unpack_arrays
 from bivosia.config import REMOTE_PROTOCOL_VERSION
 from bivosia.processing.log import configure_logging
 from bivosia.segmentation.image import create_segmenter, model_availability
-
-
-def pack_arrays(**arrays):
-    """Encode numeric arrays losslessly in a compressed NumPy archive."""
-    stream = BytesIO()
-    np.savez_compressed(stream, **arrays)
-    return base64.b64encode(stream.getvalue()).decode('ascii')
-
-
-def unpack_arrays(payload):
-    """Decode only NumPy arrays that do not require pickle."""
-    with np.load(BytesIO(base64.b64decode(payload, validate=True)), allow_pickle=False) as archive:
-        return {key: archive[key] for key in archive.files}
 
 
 def check_models(session, checkpoints, device, parameters):

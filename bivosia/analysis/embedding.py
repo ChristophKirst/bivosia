@@ -16,12 +16,14 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
+import operator
+
 import numpy as np
 
 from bivosia.config import ANALYSIS_DEFAULTS
 
 
-def embedding_features(features, *, z_score=ANALYSIS_DEFAULTS['shape_features']['z_score']):
+def embedding_features(features, *, z_score=ANALYSIS_DEFAULTS['embedding']['z_score']):
     """Copy features, optionally centering and scaling each column over samples.
 
     StandardScaler uses population variance (ddof=0). Constant columns have
@@ -38,24 +40,41 @@ def embedding_features(features, *, z_score=ANALYSIS_DEFAULTS['shape_features'][
     return values, np.zeros(values.shape[1]), np.ones(values.shape[1])
 
 
-def umap_embedding(features, *, z_score=ANALYSIS_DEFAULTS['shape_features']['z_score']):
-    """Fit a two-dimensional UMAP using the library's unmodified defaults."""
+def embedding_dimensions(n_components):
+    """Validate the requested number of UMAP dimensions.
+
+    >>> from bivosia.analysis.embedding import embedding_dimensions
+    >>> embedding_dimensions(3)
+    3
+    """
+    dimensions = operator.index(n_components)
+    if dimensions not in (2, 3):
+        raise ValueError('Choose two or three UMAP dimensions')
+    return dimensions
+
+
+def umap_embedding(features, *, n_components=ANALYSIS_DEFAULTS['embedding']['n_components'],
+                   z_score=ANALYSIS_DEFAULTS['embedding']['z_score']):
+    """Fit a 2D or 3D UMAP, keeping the library's other defaults."""
     from umap import UMAP
 
+    n_components = embedding_dimensions(n_components)
     values, mean, scale = embedding_features(features, z_score=z_score)
-    if len(values) < 4:
-        raise ValueError('Standard two-dimensional UMAP requires at least four samples')
+    if len(values) < n_components + 2:
+        raise ValueError(f'{n_components}D UMAP requires at least {n_components + 2} samples')
     if not np.any(values != values[0]):
         raise ValueError('UMAP requires variation between feature vectors')
-    model = UMAP()
+    model = UMAP(n_components=n_components)
     coordinates = model.fit_transform(values)
-    validate_embedding(coordinates, mean, scale, len(values), values.shape[1])
+    validate_embedding(coordinates, mean, scale, len(values), values.shape[1], n_components=n_components)
     return coordinates, mean, scale, model.get_params()
 
 
-def validate_embedding(coordinates, mean, scale, samples, features):
+def validate_embedding(coordinates, mean, scale, samples, features, *,
+                       n_components=ANALYSIS_DEFAULTS['embedding']['n_components']):
     """Validate saved UMAP coordinates and their feature-scaling parameters."""
-    if (coordinates.shape != (samples, 2) or mean.shape != (features,)
+    n_components = embedding_dimensions(n_components)
+    if (coordinates.shape != (samples, n_components) or mean.shape != (features,)
             or scale.shape != mean.shape or not np.isfinite(coordinates).all()
             or not np.isfinite(mean).all() or not np.isfinite(scale).all()
             or np.any(scale <= 0)):

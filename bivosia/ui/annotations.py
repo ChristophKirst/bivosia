@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from bivosia.analysis.zones_of_disagreement import frame_event_signals, zone_frame_summary
 
 @dataclass(frozen=True)
 class Zone:
@@ -45,27 +46,14 @@ def annotate_zone_missing(
     reverse_missing_signal: np.ndarray | None = None,
     missing_direction_known: np.ndarray | None = None,
 ) -> list[Zone]:
-    """Attach frame-level missing-mask evidence to each hand annotation."""
+    """Attach shared analysis summaries to annotation display records."""
     if missing_signal is None:
         return zones
-    missing = np.asarray(missing_signal, dtype=bool)
-    forward = (np.zeros_like(missing) if forward_missing_signal is None
-               else np.asarray(forward_missing_signal) > 0)
-    reverse = (np.zeros_like(missing) if reverse_missing_signal is None
-               else np.asarray(reverse_missing_signal) > 0)
-    known = (np.asarray(missing_direction_known, dtype=bool)
-             if missing_direction_known is not None else
-             np.full_like(missing, forward_missing_signal is not None and reverse_missing_signal is not None))
-    if any(value.shape != missing.shape for value in (forward, reverse, known)):
-        raise ValueError("Zone missing-mask signals must have the same length")
+    events = frame_event_signals(missing_signal, forward_missing_signal,
+                                reverse_missing_signal, missing_direction_known)
     result = []
     for zone in zones:
-        frames = np.asarray(zone.frames, dtype=np.int64)
-        marked = missing[frames]
-        result.append(replace(
-            zone,
-            missing_in_forward=bool(np.any(marked & known[frames] & forward[frames])),
-            missing_in_reverse=bool(np.any(marked & known[frames] & reverse[frames])),
-            missing_direction_unknown=bool(np.any(marked & (~known[frames] | ~(forward[frames] | reverse[frames])))),
-        ))
+        summary = zone_frame_summary(zone.frames, events=events)
+        result.append(replace(zone, **{key: summary[key] for key in (
+            'missing_in_forward', 'missing_in_reverse', 'missing_direction_unknown')}))
     return result

@@ -14,6 +14,7 @@ import tempfile
 from bivosia.dataset.file_operations import (FileDestination, checked_file, copy_bytes,
                                             delete_file, destination_path)
 from bivosia.dataset.layout import Dataset
+from bivosia.dataset.jobs import is_job_path
 from bivosia.dataset.locations import location_for, remote_locations, save_locations
 from bivosia.dataset.organize import FileMove, apply_moves
 from bivosia.dataset.paths import folder_path
@@ -83,12 +84,13 @@ def _reader(dataset, remote, path, expected):
 
 
 @contextmanager
-def _writer(remote, root, relative, state):
+def _writer(remote, root, relative, state, replace_expected=None):
     if remote is None:
-        with FileDestination(destination_path(root, relative), state) as destination:
+        with FileDestination(destination_path(root, relative, replace_expected=replace_expected), state,
+                             replace_expected=replace_expected) as destination:
             yield destination.stream, destination.publish
         return
-    with _connection(remote, 'write_file', root=str(root), relative=str(relative), state=state) as process:
+    with _connection(remote, 'write_file', root=str(root), relative=str(relative), state=state, replace_expected=replace_expected) as process:
         _response(process.stdout)
 
         def publish(checksum):
@@ -111,18 +113,20 @@ def delete_selected_file(dataset, entry, profiles):
         remote.call('delete_file', path=str(entry.path), expected=expected)
 
 
-def transfer_on_host(dataset, path, expected, root, relative, *, move):
+def transfer_on_host(dataset, path, expected, root, relative, *, move, replace_expected=None):
     """Copy or move a file on one host, verifying copied bytes before removing a source."""
     require_idle(dataset)
+    if is_job_path(relative):
+        raise ValueError('Job records stay at their execution location; delete them when no longer needed')
     source, state = checked_file(dataset, path, expected)
-    target = destination_path(root, relative)
+    target = destination_path(root, relative, replace_expected=replace_expected)
     parent = target.parent
     while not parent.exists():
         parent = parent.parent
-    if move and not source.is_symlink() and source.stat().st_dev == parent.stat().st_dev:
+    if move and replace_expected is None and not source.is_symlink() and source.stat().st_dev == parent.stat().st_dev:
         apply_moves((FileMove(source, target),))
         return
-    with FileDestination(target, state) as destination, source.open('rb') as stream:
+    with FileDestination(target, state, replace_expected=replace_expected) as destination, source.open('rb') as stream:
         progress = Progress('Moving file' if move else 'Copying file', state['size'])
         checksum = copy_bytes(stream, destination.stream, state['size'], progress.update)
         checked_file(dataset, source, state)
@@ -147,13 +151,16 @@ def move_selected_file(dataset, entry, location, profiles):
     _transfer_selected_file(dataset, entry, location, profiles, move=True)
 
 
-def copy_selected_file(dataset, entry, location, profiles):
+def copy_selected_file(dataset, entry, location, profiles, *, replace_expected=None, source_expected=None):
     """Copy to another dataset root while preserving the selected source and its reference."""
-    _transfer_selected_file(dataset, entry, location, profiles, move=False)
+    _transfer_selected_file(dataset, entry, location, profiles, move=False, replace_expected=replace_expected,
+                            source_expected=source_expected)
 
 
-def _transfer_selected_file(dataset, entry, location, profiles, *, move):
+def _transfer_selected_file(dataset, entry, location, profiles, *, move, replace_expected=None, source_expected=None):
     require_idle(dataset)
+    if is_job_path(entry.relative):
+        raise ValueError('Job records stay at their execution location; delete them when no longer needed')
     current = Dataset(dataset.directory)
     reference = current.settings.get('video')
     selected_video = (not entry.host and reference and Path(reference).expanduser().is_absolute()
@@ -163,16 +170,16 @@ def _transfer_selected_file(dataset, entry, location, profiles, *, move):
         raise FileNotFoundError(f'Destination dataset folder is unavailable: {root}')
     source = _remote(current, entry.host, profiles)
     destination = _remote(current, host, profiles, root)
-    expected = {'size': entry.size, 'modified': entry.modified}
+    expected = source_expected or {'size': entry.size, 'modified': entry.modified}
     if entry.host == host:
         if source is None:
-            transfer_on_host(current, entry.path, expected, root, entry.relative, move=move)
+            transfer_on_host(current, entry.path, expected, root, entry.relative, move=move, replace_expected=replace_expected)
         else:
             source.call('move_file' if move else 'copy_file', timeout=None, path=str(entry.path), expected=expected,
-                        root=root, relative=str(entry.relative))
+                        root=root, relative=str(entry.relative), replace_expected=replace_expected)
     else:
         with _reader(current, source, entry.path, expected) as (reader, state, verify):
-            with _writer(destination, root, entry.relative, state) as (writer, publish):
+            with _writer(destination, root, entry.relative, state, replace_expected) as (writer, publish):
                 progress = Progress('Moving file' if move else 'Copying file', state['size'])
                 checksum = copy_bytes(reader, writer, state['size'], progress.update)
                 verify(checksum)
@@ -204,9 +211,10 @@ def serve_file(request):
             checked_file(dataset, path, state)
             print(json.dumps({'sha256': checksum}), flush=True)
     else:
-        target = destination_path(request['root'], request['relative'])
+        replace_expected = request.get('replace_expected')
+        target = destination_path(request['root'], request['relative'], replace_expected=replace_expected)
         state = request['state']
-        with FileDestination(target, state) as destination:
+        with FileDestination(target, state, replace_expected=replace_expected) as destination:
             print(json.dumps({'ready': True}), flush=True)
             checksum = copy_bytes(sys.stdin.buffer, destination.stream, state['size'])
             if _response(sys.stdin.buffer).get('sha256') != checksum:

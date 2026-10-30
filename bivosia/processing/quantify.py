@@ -24,11 +24,12 @@ import logging
 
 import numpy as np
 
-from bivosia.analysis.masks import (
-    frame_quality_measures, mask_areas, mask_intersections,
-    optimal_assignments, permutation_change_measures,
-)
 from bivosia.config import ANALYSIS_DEFAULTS, PROCESSING_DEFAULTS
+from bivosia.analysis.mask_features import mask_areas
+from bivosia.analysis.quality import (
+    frame_quality_measures, mask_intersections, optimal_assignments,
+    permutation_change_measures, temporal_assignment_quality,
+)
 from bivosia.dataset.paths import file_name
 from bivosia.dataset.arrays import MaskOverlaps, array_output, write_array
 from bivosia.dataset.jsonio import atomic_json
@@ -66,34 +67,34 @@ def _open_masks(forward, reverse, dataset):
 def _overlap_block(task):
     recording, forward_path, reverse_path, start, end, n, temporal_intersections, dataset, count_dtype = task
     _open_masks(forward_path, reverse_path, dataset)
-    read_start = max(0, start - 1) if temporal_intersections else start
+    read_start = max(0, start - 1)
     forward, reverse = np.asarray(_FORWARD[read_start:end]), np.asarray(_REVERSE[read_start:end])
     result = np.empty((end - start, n, n), dtype=count_dtype)
-    areas = np.empty((2, end - start, n), dtype=count_dtype)
-    temporal = (np.empty((2, end - max(1, start), n, n), dtype=count_dtype)
-                if temporal_intersections else None)
+    areas = np.empty((2, end - read_start, n), dtype=count_dtype)
+    temporal = np.empty((2, end - max(1, start), n, n), dtype=count_dtype)
     previous = None
     for offset, frame in enumerate(range(read_start, end)):
         current = tuple(masks[offset] for masks in (forward, reverse))
+        areas[:, offset] = tuple(mask_areas(mask, n) for mask in current)
         if frame >= start:
             result[frame - start] = mask_intersections(*current, n)
-            areas[:, frame - start] = tuple(mask_areas(mask, n) for mask in current)
-            if temporal_intersections and previous is not None:
+            if previous is not None:
                 for direction in range(2):
                     temporal[direction, frame - max(1, start)] = mask_intersections(
                         previous[direction], current[direction], n)
-        if temporal_intersections:
-            previous = current
-    return recording, start, end, result, areas, temporal
+        previous = current
+    quality = temporal_assignment_quality(temporal, areas)
+    return (recording, start, end, result, areas[:, start - read_start:],
+            temporal if temporal_intersections else None, quality)
 
 
 def calculate_mask_overlaps(forward_path, reverse_path, output, n_animals, *,
                             workers=PROCESSING_DEFAULTS['quantify']['workers'],
                             batch_size=PROCESSING_DEFAULTS['quantify']['overlap_batch_size'],
                             dataset="masks",
-                            temporal_intersections=ANALYSIS_DEFAULTS['masks']['temporal_intersections'],
+                            temporal_intersections=ANALYSIS_DEFAULTS['quality']['temporal_intersections'],
                             progress=None, cancelled=None):
-    """Write pixel intersections and areas, optionally adding temporal counts.
+    """Write pixel counts and temporal quality, optionally saving temporal counts.
 
     Output intersections have shape (frames, animals, animals). The sibling
     area array has shape (2, frames, animals), ordered forward then reverse.
@@ -111,17 +112,17 @@ def _calculate_mask_overlaps(jobs, n_animals, *,
                              workers=PROCESSING_DEFAULTS['quantify']['workers'],
                              batch_size=PROCESSING_DEFAULTS['quantify']['overlap_batch_size'],
                              dataset="masks",
-                             temporal_intersections=ANALYSIS_DEFAULTS['masks']['temporal_intersections'],
+                             temporal_intersections=ANALYSIS_DEFAULTS['quality']['temporal_intersections'],
                              progress=None, cancelled=None):
     """Share one worker pool across recording blocks; commit completed recordings."""
-    if n_animals < 1 or batch_size < 1:
-        raise ValueError("n_animals and batch_size must be positive")
+    if n_animals < 2 or batch_size < 1:
+        raise ValueError("n_animals must be at least two and batch_size positive")
     jobs = [tuple(map(Path, job)) for job in jobs]
     if not jobs:
         raise ValueError("No recordings selected")
     if len({output.resolve().parent for _, _, output in jobs}) != len(jobs):
         raise ValueError("Each recording must have a distinct output directory")
-    count_dtype = np.dtype(ANALYSIS_DEFAULTS['masks']['count_dtype'])
+    count_dtype = np.dtype(ANALYSIS_DEFAULTS['quality']['count_dtype'])
     shapes = [mask_shape(forward, reverse, dataset) for forward, reverse, _ in jobs]
     if any(height * width > np.iinfo(count_dtype).max for _, height, width in shapes):
         raise ValueError(f"Frame pixel count exceeds {count_dtype} capacity")
@@ -141,7 +142,7 @@ def _calculate_mask_overlaps(jobs, n_animals, *,
     try:
         with ExitStack() as stack:
             with closing(unordered_blocks(_overlap_block, tasks, workers=count)) as results:
-                for index, start, end, values, block_areas, block_temporal in results:
+                for index, start, end, values, block_areas, block_temporal, block_quality in results:
                     report.check_cancelled()
                     if index not in targets:
                         output = jobs[index][2]
@@ -150,15 +151,19 @@ def _calculate_mask_overlaps(jobs, n_animals, *,
                             output, (frames[index], n_animals, n_animals), count_dtype))
                         areas = outputs.enter_context(array_output(output.with_name(file_name("mask_areas")),
                             (2, frames[index], n_animals), count_dtype))
+                        quality = outputs.enter_context(array_output(
+                            output.with_name(file_name("mask_temporal_quality")),
+                            (2, frames[index] - 1), np.float32))
                         temporal = None
                         if temporal_intersections:
                             temporal = outputs.enter_context(array_output(
                                 output.with_name(file_name("mask_temporal_intersections")),
                                 (2, frames[index] - 1, n_animals, n_animals), count_dtype))
-                        targets[index] = outputs, destination, areas, temporal
-                    outputs, destination, areas, temporal = targets[index]
+                        targets[index] = outputs, destination, areas, temporal, quality
+                    outputs, destination, areas, temporal, quality = targets[index]
                     destination[start:end] = values
                     areas[:, start:end] = block_areas
+                    quality[:, max(0, start - 1):end - 1] = block_quality
                     if temporal is not None:
                         temporal[:, max(0, start - 1):end - 1] = block_temporal
                     remaining[index] -= end - start
@@ -221,7 +226,7 @@ def quantify_job(dataset, *, progress=None, cancelled=None, **settings):
 
 
 def quantify(dataset, n_animals, *, workers=PROCESSING_DEFAULTS['quantify']['workers'],
-             temporal_intersections=ANALYSIS_DEFAULTS['masks']['temporal_intersections'],
+             temporal_intersections=ANALYSIS_DEFAULTS['quality']['temporal_intersections'],
              progress=None, cancelled=None):
     """Run basic mask quantification using the dataset's standard output paths."""
     return quantify_many([dataset], n_animals, workers=workers,
@@ -230,14 +235,14 @@ def quantify(dataset, n_animals, *, workers=PROCESSING_DEFAULTS['quantify']['wor
 
 
 def quantify_many(datasets, n_animals, *, workers=PROCESSING_DEFAULTS['quantify']['workers'],
-                  temporal_intersections=ANALYSIS_DEFAULTS['masks']['temporal_intersections'],
+                  temporal_intersections=ANALYSIS_DEFAULTS['quality']['temporal_intersections'],
                   progress=None, cancelled=None):
     """Quantify recordings with a shared mask-processing pool and per-recording outputs."""
     if n_animals < 2:
         raise ValueError("Assignment quality requires at least two animals")
     datasets = list(datasets)
     options = {"progress": progress, "cancelled": cancelled}
-    names = ["mask_intersections", "mask_areas", "mask_iou_match", "mask_quality", "mask_missing", "mask_switch", "mask_quality_metadata"]
+    names = ["mask_intersections", "mask_areas", "mask_temporal_quality", "mask_iou_match", "mask_quality", "mask_missing", "mask_switch", "mask_quality_metadata"]
     if temporal_intersections:
         names.append("mask_temporal_intersections")
     outputs = [{name: item.array(name, write=True) for name in names} for item in datasets]
@@ -250,7 +255,8 @@ def quantify_many(datasets, n_animals, *, workers=PROCESSING_DEFAULTS['quantify'
         logger.info("Assignments and quality: %s", item.directory)
         quality = calculate_quality_measures(output["mask_intersections"], output["mask_areas"],
                                              output["mask_quality"].parent, **options)
-        paths = {"mask_intersections": output["mask_intersections"], "mask_areas": output["mask_areas"], **quality}
+        paths = {"mask_intersections": output["mask_intersections"], "mask_areas": output["mask_areas"],
+                 "mask_temporal_quality": output["mask_temporal_quality"], **quality}
         if temporal_intersections:
             paths["mask_temporal_intersections"] = output["mask_temporal_intersections"]
         results.append(paths)

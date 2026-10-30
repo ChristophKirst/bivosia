@@ -34,11 +34,13 @@ From the local directory containing the outer `bivosia/` project folder:
 
 ```bash
 ssh workstation "mkdir -p ~/software"
-scp -r bivosia workstation:~/software/
+rsync -a --exclude external/ --exclude .git/ bivosia/ workstation:~/software/bivosia/
 ```
 
 - The outer `~/software/bivosia/` folder contains `pyproject.toml`, `docs/` and the inner
   `bivosia/` package. That inner folder contains `config.py` and `processing/`.
+- The copy excludes local model downloads and environments in `external/`; install
+  the required models in the remote environment as described below.
 - Keep local and remote code in sync. Registering an installation does not copy or update it.
 
 ## 3. Prepare the remote Python environment
@@ -54,7 +56,7 @@ python -m pip install -e .
 ```
 
 - The editable installation uses the copied project. The remote account needs write
-  access to `~/software/external/` for model sources and weights; existing model files stay there.
+  access to `~/software/bivosia/external/` for model sources and weights.
 - Cutie jobs also need write access to the remote dataset directory.
 
 Check the installed package from any directory:
@@ -113,12 +115,14 @@ python -m bivosia.run.run_install cutie
 | Task | Remote inputs | Local result |
 |---|---|---|
 | SAM key-frame prediction | Model/checkpoint; the app transfers the current image and prompts. No remote dataset path. | Candidate masks return to the editor. |
-| Cutie VOS | Choose a remote location in **View files → Locations…**, or use the installation's default data folder. **Run** uploads the video, settings and saved key frames. | Local transfer/job progress and logs; **Fetch results** downloads completed outputs without overwriting. |
+| Cutie VOS | Choose the location in **View files → Locations…**. Copy or consolidate the video and key-frame files there before running. | Progress and logs; masks are read frame by frame from the remote location. |
+| Mask analysis / features / keypoint alignment | Select **Processing → SSH**. Required files must exist on that host. | Remote console logs; recording viewers load plot arrays and requested mask frames. |
 
-- **Check** reports missing inputs without uploading; **Run** synchronizes them before inference.
-- Identical remote inputs are reused. Differing remote files stop the upload; choose another
-  dataset folder or resolve the differences. Existing results and annotations are not overwritten.
-- Video symlinks are transferred as actual files. Use absolute server folder paths, not `sftp://` URLs.
+- Transfer dataset files in **View files**, using file **Copy / Move** or **Consolidate…**.
+- Consolidation compares existing copies and asks which version to use for each conflict.
+  Its destination description uses relative paths; source copies are retained.
+- **Check** validates VOS inputs and model availability. **Run** opens the dataset viewer to sync missing inputs, then submits the job automatically.
+- Video symlinks are copied as actual files. Use absolute server folder paths, not `sftp://` URLs.
 - On a cluster, use an allocated compute node or an exported script with your scheduler.
   BiVOSIA does not request scheduler resources.
 

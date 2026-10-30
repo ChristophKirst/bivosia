@@ -15,7 +15,7 @@ import numpy as np
 from bivosia.processing.export import export_masks
 from bivosia.analysis.linking import initial_draft, link_segments, match_masks, prepare_links, validation_errors
 from bivosia.dataset.session import RevisionSession
-from bivosia.analysis.revision import RevisionZone
+from bivosia.analysis.zones_of_disagreement import RevisionZone
 from bivosia.dataset.layout import Dataset
 
 

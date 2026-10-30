@@ -19,7 +19,7 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
-from bivosia.analysis.key_frames import best_mask, prompted_animals, point_prompts
+from bivosia.analysis.keyframes import best_mask, prompted_animals, point_prompts
 from bivosia.processing.log import Progress
 
 

@@ -1,4 +1,4 @@
-"""Application-wide keyboard controls for BiVOSIA interface text.
+"""Persistent application-wide keyboard controls for BiVOSIA interface text.
 
 Examples
 --------
@@ -13,9 +13,11 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QFont, QFontInfo
 from PySide6.QtWidgets import QApplication
+
+from bivosia.config import APPLICATION_SETTINGS, FONT_SIZE_SETTING
 
 
 FONT_ZOOM_PROPERTY = "bivosia_font_zoom_controller"
@@ -24,9 +26,10 @@ FONT_ZOOM_PROPERTY = "bivosia_font_zoom_controller"
 class FontZoomController(QObject):
     """Change the application font with Ctrl+plus, Ctrl+minus and Ctrl+zero."""
 
-    def __init__(self, application: QApplication):
+    def __init__(self, application: QApplication, *, settings=None):
         super().__init__(application)
         self.application = application
+        self.settings = settings if settings is not None else QSettings(*APPLICATION_SETTINGS)
         self.default_font = QFont(application.font())
         point_size = self.default_font.pointSizeF()
         self.default_point_size = (
@@ -34,6 +37,7 @@ class FontZoomController(QObject):
             else QFontInfo(self.default_font).pointSizeF()
         )
         self.point_size = self.default_point_size
+        self.set_point_size(self.settings.value(FONT_SIZE_SETTING, self.default_point_size, type=float))
         application.installEventFilter(self)
 
     def eventFilter(self, watched, event):
@@ -64,6 +68,8 @@ class FontZoomController(QObject):
 
     def reset(self):
         self.point_size = self.default_point_size
+        self.settings.remove(FONT_SIZE_SETTING)
+        self.settings.sync()
         self._apply_font(QFont(self.default_font))
 
     def set_point_size(self, point_size):
@@ -74,6 +80,8 @@ class FontZoomController(QObject):
         font.setPointSizeF(point_size)
         self.point_size = point_size
         self._apply_font(font)
+        self.settings.setValue(FONT_SIZE_SETTING, point_size)
+        self.settings.sync()
 
     def _apply_font(self, font):
         """Apply one font to existing and future interface text."""

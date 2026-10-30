@@ -12,10 +12,11 @@ import unittest
 import h5py
 import numpy as np
 
-from bivosia.analysis.alignment import align_scores
-from bivosia.analysis.point_masks import align_points_to_masks, point_mask_scores, point_mask_overlaps, point_overlap_scores
+from bivosia.analysis.alignment import (
+    align_scores, align_points_to_masks, point_mask_scores, point_mask_overlaps, point_overlap_scores,
+)
 from bivosia.analysis.keypoints import keypoint_identity_events
-from bivosia.analysis.revision import RevisionZone
+from bivosia.analysis.zones_of_disagreement import RevisionZone
 from bivosia.dataset.keypoints import load_keypoints
 from bivosia.dataset.frame_data import PointData
 from bivosia.dataset.layout import Dataset

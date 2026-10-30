@@ -9,7 +9,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 
 import numpy as np
 
-from bivosia.analysis.masks import iou_from_intersections
+from bivosia.analysis.quality import iou_from_intersections
 from bivosia.config import ANALYSIS_DEFAULTS
 from bivosia.dataset.paths import file_name
 from bivosia.dataset.formats import format_handler
@@ -47,7 +47,7 @@ class MaskOverlaps:
                 raise ValueError("Expected intersections with shape (frames, animals, animals)")
             if self.areas.shape != (2, shape[0], shape[1]):
                 raise ValueError("Area and intersection dimensions differ")
-            count_dtype = np.dtype(ANALYSIS_DEFAULTS['masks']['count_dtype'])
+            count_dtype = np.dtype(ANALYSIS_DEFAULTS['quality']['count_dtype'])
             if self.intersections.dtype != count_dtype or self.areas.dtype != count_dtype:
                 raise ValueError(f"Intersections and areas must contain {count_dtype} pixel counts")
         except BaseException:
@@ -69,7 +69,7 @@ class MaskOverlaps:
 
 
 def array_output(path, shape, dtype, *, fill=None):
-    """Create an array through its registered writer, retaining failed partials."""
+    """Create an array through its registered writer, removing failed partials."""
     return format_handler('arrays', path, operation='writer')(path, shape, dtype, fill=fill)
 
 

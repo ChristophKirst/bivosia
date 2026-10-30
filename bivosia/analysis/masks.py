@@ -1,30 +1,12 @@
-"""Mask overlap, assignment quality, missing identities and pixel relabeling.
+"""Validate, relabel, clean and preprocess mask images.
 
 Examples
 --------
->>> from bivosia.analysis.masks import frame_iou_matrix, mask_intersections, mask_presence, missing_mask_counts, relabel_mask
 >>> import numpy as np
+>>> from bivosia.analysis.masks import relabel_mask
 >>> labels = np.array([[0, 1], [2, 2]])
->>> intersections = mask_intersections(labels, labels, 2)
->>> intersections.tolist()
-[[1, 0], [0, 2]]
->>> iou, forward_area, reverse_area = frame_iou_matrix(labels, labels, 2)
->>> iou.tolist()
-[[1.0, 0.0], [0.0, 1.0]]
->>> forward_area.tolist(), reverse_area.tolist()
-([1, 2], [1, 2])
->>> cached, _, _ = frame_iou_matrix(labels, labels, 2, areas=(forward_area, reverse_area))
->>> bool(np.array_equal(cached, iou))
-True
->>> iou, forward_area, reverse_area = frame_iou_matrix(labels, np.zeros_like(labels), 2)
->>> bool(np.isnan(iou).all()), reverse_area.tolist()
-(True, [0, 0])
->>> missing_mask_counts(np.stack((forward_area, reverse_area))).tolist()
-[0, 2]
 >>> relabel_mask(labels, (1, 0)).tolist()
 [[0, 2], [1, 1]]
->>> mask_presence(labels, 3).tolist()
-[True, True, False]
 """
 
 from __future__ import annotations
@@ -33,10 +15,16 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
-import numpy as np
-from scipy.optimize import linear_sum_assignment
+import operator
 
-from bivosia.config import LINKED_MASK_STREAMS
+import numpy as np
+import cv2
+
+from bivosia.config import ANALYSIS_DEFAULTS, LINKED_MASK_STREAMS
+from bivosia.analysis.keyframes import output_shape, validate_mask
+
+
+# Mask validation
 
 
 def validate_mask_data(masks, valid=None):
@@ -73,12 +61,6 @@ def validate_linked_mask_data(arrays):
         raise ValueError('Linked-mask source must be an integer vector covering every frame')
 
 
-def mask_areas(mask: np.ndarray, n: int) -> np.ndarray:
-    """Count foreground pixels for raw object IDs 1..n, excluding background."""
-    labels = _mask_labels(mask, n)
-    return np.bincount(labels, minlength=n + 1)[1:n + 1].astype(np.int64, copy=False)
-
-
 def _mask_labels(mask, n):
     mask = np.asarray(mask)
     if n < 1 or not np.issubdtype(mask.dtype, np.integer):
@@ -88,163 +70,56 @@ def _mask_labels(mask, n):
     return mask.reshape(-1).astype(np.int64, copy=False)
 
 
-def mask_intersections(first: np.ndarray, second: np.ndarray, n: int) -> np.ndarray:
-    """Count pairwise foreground intersections; rows index first, columns second."""
-    if first.shape != second.shape:
-        raise ValueError("Masks must use the same image coordinates")
-    first, second = _mask_labels(first, n), _mask_labels(second, n)
-    valid = (first > 0) & (second > 0)
-    pairs = (first[valid] - 1) * n + second[valid] - 1
-    return np.bincount(pairs, minlength=n * n).reshape(n, n).astype(np.int64, copy=False)
+def validate_cleaned_key_frames(frames, masks, frame_count, animals):
+    """Check source frame indices, image dimensions and cleaned animal labels."""
+    frames, masks = np.asarray(frames), np.asarray(masks)
+    if (frames.ndim != 1 or not np.issubdtype(frames.dtype, np.integer)
+            or frame_count < 1 or np.any(frames < 0) or np.any(frames >= frame_count)
+            or np.any(np.diff(frames) <= 0)):
+        raise ValueError('Cleaned key frames must have unique increasing indices inside the video')
+    if masks.ndim != 3 or masks.shape[0] != len(frames) or not all(masks.shape):
+        raise ValueError('Cleaned masks must have shape (key frames, height, width)')
+    for mask in masks:
+        validate_mask(mask, masks.shape[1:], animals)
 
 
-def iou_from_intersections(intersections, first_area, second_area):
-    """Derive float32 IoU from integer counts, with NaN for either absent mask.
+# Mask manipulation
 
-    Accept one matrix or batches: (..., N, M), (..., N), (..., M).
-    Areas include mask pixels overlapping the other image's background.
-    Counts are promoted to int64 before arithmetic to avoid unsigned overflow.
+
+def validate_downsample_factor(value):
+    """Return a positive integer spatial downsampling factor."""
+    try:
+        factor = operator.index(value)
+    except TypeError:
+        raise ValueError('Downsample factor must be a positive integer') from None
+    if isinstance(value, (bool, np.bool_)) or factor < 1:
+        raise ValueError('Downsample factor must be a positive integer')
+    return factor
+
+
+def downsample_mask(mask, factor):
+    """Reduce a boolean mask with nearest-neighbor sampling; never alter its source.
+
+    Factor 1 keeps the original resolution. Dimensions are rounded to the
+    nearest integer, with a minimum of one pixel, as for VOS output resizing.
+
+    >>> import numpy as np
+    >>> from bivosia.analysis.masks import downsample_mask
+    >>> mask = np.zeros((8, 12), dtype=bool)
+    >>> mask[2:6, 4:8] = True
+    >>> smaller = downsample_mask(mask, 2)
+    >>> smaller.shape, int(smaller.sum()), int(mask.sum())
+    ((4, 6), 4, 16)
     """
-    intersections, first_area, second_area = map(np.asarray, (intersections, first_area, second_area))
-    if (intersections.ndim < 2 or first_area.shape != intersections.shape[:-1]
-            or second_area.shape != intersections.shape[:-2] + intersections.shape[-1:]):
-        raise ValueError("Intersection and area dimensions differ")
-    if any(not np.issubdtype(values.dtype, np.integer) for values in (intersections, first_area, second_area)):
-        raise ValueError("Intersections and areas must contain integer pixel counts")
-    intersections, first_area, second_area = (
-        values.astype(np.int64, copy=False) for values in (intersections, first_area, second_area))
-    if any(np.any(values < 0) for values in (intersections, first_area, second_area)):
-        raise ValueError("Pixel counts must be nonnegative")
-    # Each label image partitions its foreground into disjoint masks.
-    if (np.any(intersections.sum(axis=-1) > first_area)
-            or np.any(intersections.sum(axis=-2) > second_area)):
-        raise ValueError("Intersections exceed the corresponding mask areas")
-    union = first_area[..., :, None] + second_area[..., None, :] - intersections
-    present = (first_area[..., :, None] > 0) & (second_area[..., None, :] > 0)
-    return np.divide(intersections, union,
-                     out=np.full(intersections.shape, np.nan, dtype=np.float32), where=present)
-
-
-def frame_iou_matrix(
-    first: np.ndarray, second: np.ndarray, n: int, *,
-    areas: tuple[np.ndarray, np.ndarray] | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return pairwise IoU and both area vectors for object IDs 1..n.
-
-    Areas count foreground pixels, excluding background ID 0. Missing masks
-    have area zero; their IoU pairs are NaN. Supply precomputed areas to reuse
-    them when comparing the same masks with another direction or time frame.
-    Rows index the first mask image; columns index the second.
-    """
-    first_area, second_area = (mask_areas(first, n), mask_areas(second, n)) if areas is None else areas
-    result = iou_from_intersections(mask_intersections(first, second, n), first_area, second_area)
-    return result, first_area, second_area
-
-
-def optimal_assignments(iou_matrices: np.ndarray) -> np.ndarray:
-    """Return the independent per-frame Hungarian permutation."""
-    matrices = np.asarray(iou_matrices)
-    if matrices.ndim != 3 or matrices.shape[1] != matrices.shape[2]:
-        raise ValueError(
-            "IoU matrices must have shape (frames, animals, animals); "
-            f"got {matrices.shape}"
-        )
-    frame_count, n_animals, _ = matrices.shape
-    work = np.nan_to_num(matrices, nan=0.0, posinf=0.0, neginf=0.0)
-    assignments = np.empty((frame_count, n_animals), dtype=np.int16)
-    if n_animals == 2:
-        identity = work[:, 0, 0] + work[:, 1, 1]
-        crossed = work[:, 0, 1] + work[:, 1, 0]
-        use_identity = identity >= crossed
-        assignments[:, 0] = np.where(use_identity, 0, 1)
-        assignments[:, 1] = np.where(use_identity, 1, 0)
-    else:
-        for frame in range(frame_count):
-            rows, columns = linear_sum_assignment(work[frame], maximize=True)
-            assignments[frame, rows] = columns
-    return assignments
-
-
-def frame_quality_measures(
-    iou_matrices: np.ndarray, assignment: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return signed quality, missing flags, assigned IoUs and local margins."""
-    matrices = np.asarray(iou_matrices)
-    assignments = np.asarray(assignment)
-    if matrices.ndim != 3 or matrices.shape[1] != matrices.shape[2]:
-        raise ValueError("IoU matrices must have shape (frames, animals, animals)")
-    frame_count, n_animals, _ = matrices.shape
-    if n_animals < 2:
-        raise ValueError("Local assignment margins require at least two animals")
-    if assignments.shape != (frame_count, n_animals):
-        raise ValueError("IoU match array has an incompatible shape")
-    missing = np.isnan(matrices).any(axis=(1, 2))
-    work = np.nan_to_num(matrices, nan=0.0, posinf=0.0, neginf=0.0)
-    frame_indices = np.arange(frame_count)[:, None]
-    animal_indices = np.arange(n_animals)[None, :]
-    assigned = work[frame_indices, animal_indices, assignments]
-
-    # Compare each assigned pair with the strongest unassigned row/column pair.
-    alternatives = work.copy()
-    alternatives[frame_indices, animal_indices, assignments] = -np.inf
-    best_row_alternative = np.max(alternatives, axis=2)
-    best_column_alternatives = np.max(alternatives, axis=1)
-    best_column_alternative = best_column_alternatives[frame_indices, assignments]
-    row_margin = assigned - best_row_alternative
-    column_margin = assigned - best_column_alternative
-    local_margin = np.minimum(row_margin, column_margin).astype(np.float32, copy=False)
-    quality = np.min(local_margin, axis=1).astype(np.float32, copy=False)
-    assigned = assigned.astype(np.float32, copy=False)
-    if np.any(missing):
-        # Assignment quality is undefined when a mask is missing.
-        quality = quality.copy()
-        assigned = assigned.copy()
-        local_margin = local_margin.copy()
-        quality[missing] = np.nan
-        assigned[missing] = np.nan
-        local_margin[missing] = np.nan
-    return quality, missing, assigned, local_margin
-
-
-def permutation_change_measures(
-    assignment: np.ndarray, missing: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return valid adjacent permutation changes and their incident frames."""
-    assignments = np.asarray(assignment)
-    missing_frames = np.asarray(missing, dtype=bool)
-    frame_count = assignments.shape[0]
-    if assignments.ndim != 2 or missing_frames.shape != (frame_count,):
-        raise ValueError("Assignment and missing arrays have incompatible shapes")
-    changes = np.zeros(max(0, frame_count - 1), dtype=bool)
-    if frame_count > 1:
-        changes = np.any(assignments[1:] != assignments[:-1], axis=1)
-        changes &= ~missing_frames[:-1] & ~missing_frames[1:]
-    switch_frames = np.zeros(frame_count, dtype=bool)
-    if changes.size:
-        switch_frames[:-1] |= changes
-        switch_frames[1:] |= changes
-    return changes, switch_frames
-
-
-def missing_mask_counts(present: np.ndarray) -> np.ndarray:
-    """Count zeros along the identity axis of Boolean presence or pixel areas."""
-    present = np.asarray(present, dtype=bool)
-    return present.shape[-1] - np.count_nonzero(present, axis=-1)
-
-
-def mask_presence(mask, n):
-    """Return whether each object ID 1..n occurs in the mask."""
-    return np.isin(np.arange(1, n + 1), np.unique(mask))
-
-
-def mask_centers(masks, n):
-    ys, xs = np.nonzero((masks > 0) & (masks <= n))
-    labels = masks[ys, xs].astype(np.intp)
-    counts = np.bincount(labels, minlength=n + 1)
-    sum_x = np.bincount(labels, weights=xs, minlength=n + 1)
-    sum_y = np.bincount(labels, weights=ys, minlength=n + 1)
-    return tuple((float(sum_x[i] / counts[i]), float(sum_y[i] / counts[i])) if counts[i] else None
-                 for i in range(1, n + 1))
+    factor = validate_downsample_factor(factor)
+    mask = np.asarray(mask)
+    if mask.ndim != 2 or mask.dtype != np.bool_ or not all(mask.shape):
+        raise ValueError('Expected a nonempty two-dimensional boolean image')
+    if factor == 1:
+        return mask
+    shape = output_shape(mask.shape, 1 / factor)
+    return cv2.resize(mask.astype(np.uint8), (shape[1], shape[0]),
+                      interpolation=cv2.INTER_NEAREST_EXACT) != 0
 
 
 def relabel_mask(mask, mapping):
@@ -253,3 +128,177 @@ def relabel_mask(mask, mapping):
         raise ValueError("Raw mask contains a label outside the declared animal count")
     lookup = np.asarray([0, *(int(i) + 1 for i in mapping)], dtype=np.uint16)
     return lookup[mask]
+
+
+def clean_masks(masks, *,
+                contour_min_area=ANALYSIS_DEFAULTS['masks']['cleanup']['contour_min_area'],
+                contour_max_area=ANALYSIS_DEFAULTS['masks']['cleanup']['contour_max_area'],
+                overlap_kernel=ANALYSIS_DEFAULTS['masks']['cleanup']['overlap_kernel']):
+    """Return cleaned binary masks shaped (animals, height, width).
+
+    Contour areas are measured by OpenCV in squared input-image pixels, with
+    both limits inclusive. Each accepted contour is filled independently,
+    including contours around holes. Pixels covered by the square dilation
+    of two or more accepted masks are cleared from every mask. The dilation
+    only determines exclusions; it does not enlarge the returned masks.
+
+    ``overlap_kernel`` is a positive odd side length in input-image pixels.
+    A side length of one excludes only actual overlaps. Inputs are unchanged.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from bivosia.analysis.masks import clean_masks
+    >>> masks = np.zeros((3, 8, 16), dtype=bool)
+    >>> masks[0, 1:4, 1:4] = masks[1, 1:4, 4:7] = True
+    >>> masks[2, 1:4, 12:15] = masks[0, 6, 1] = True
+    >>> cleaned = clean_masks(masks, contour_min_area=4, contour_max_area=9, overlap_kernel=3)
+    >>> cleaned.sum(axis=(1, 2)).tolist()
+    [6, 6, 9]
+    >>> bool(masks[0, 6, 1]), bool(cleaned[0, 6, 1])
+    (True, False)
+    """
+    masks = np.asarray(masks, dtype=bool)
+    if masks.ndim != 3 or min(masks.shape[1:]) < 1:
+        raise ValueError('Masks must have shape (animals, height, width) with nonempty images')
+    if not (np.isfinite(contour_min_area) and np.isfinite(contour_max_area)
+            and 0 <= contour_min_area <= contour_max_area):
+        raise ValueError('Contour area limits must be finite and satisfy 0 <= minimum <= maximum')
+    try:
+        size = operator.index(overlap_kernel)
+    except TypeError:
+        raise ValueError('Overlap kernel must be a positive odd integer') from None
+    if isinstance(overlap_kernel, (bool, np.bool_)) or size < 1 or size % 2 != 1:
+        raise ValueError('Overlap kernel must be a positive odd integer')
+
+    cleaned = np.zeros(masks.shape, dtype=bool)
+    covered = np.zeros(masks.shape[1:], dtype=bool)
+    excluded = np.zeros_like(covered)
+    kernel = np.ones((size, size), dtype=np.uint8)
+    for animal, mask in enumerate(masks):
+        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+        accepted = np.zeros(mask.shape, dtype=np.uint8)
+        for contour in contours:
+            if contour_min_area <= cv2.contourArea(contour) <= contour_max_area:
+                cv2.drawContours(accepted, [contour], -1, 1, -1)
+        cleaned[animal] = accepted != 0
+        dilated = cv2.dilate(accepted, kernel) != 0
+        excluded |= covered & dilated
+        covered |= dilated
+    cleaned[:, excluded] = False
+    return cleaned
+
+
+def clean_label_mask(mask, **parameters):
+    """Clean a full-resolution label image while preserving animal IDs and input pixels.
+
+    The returned image is a separate array. Background is zero; positive IDs
+    are cleaned jointly so overlap exclusions account for every animal.
+
+    >>> import numpy as np
+    >>> from bivosia.analysis.masks import clean_label_mask
+    >>> labels = np.zeros((6, 6), dtype=np.uint8)
+    >>> labels[1:4, 1:4], labels[5, 5] = 7, 7
+    >>> cleaned = clean_label_mask(labels, contour_min_area=4, contour_max_area=9, overlap_kernel=1)
+    >>> np.unique(cleaned).tolist(), int(np.count_nonzero(cleaned))
+    ([0, 7], 9)
+    >>> int(labels[5, 5])
+    7
+    """
+    mask = np.asarray(mask)
+    if mask.ndim != 2 or not all(mask.shape):
+        raise ValueError('Expected a nonempty two-dimensional label image')
+    mask = validate_mask(mask, mask.shape, 255)
+    animals = np.unique(mask[mask > 0])
+    regions = clean_masks(mask == animals[:, None, None], **parameters)
+    result = np.zeros_like(mask)
+    for animal, region in zip(animals, regions):
+        result[region] = animal
+    return result
+
+
+def preprocessing_settings(enabled, **parameters):
+    """Return validated settings, or None when preprocessing is disabled."""
+    if not enabled:
+        return None
+    settings = dict(ANALYSIS_DEFAULTS['masks']['preprocessing'])
+    if parameters.keys() - settings.keys():
+        raise ValueError('Unknown mask preprocessing parameter')
+    settings.update(parameters)
+    for name in ('filter_by_area', 'filter_by_distance', 'apply_opening'):
+        if not isinstance(settings[name], (bool, np.bool_)):
+            raise ValueError(f'{name} must be boolean')
+        settings[name] = bool(settings[name])
+    for name in ('main_body_area', 'fragment_distance'):
+        if not np.isfinite(settings[name]) or settings[name] < 0:
+            raise ValueError(f'{name} must be finite and nonnegative')
+    try:
+        radius = operator.index(settings['opening_radius'])
+    except TypeError:
+        raise ValueError('Opening radius must be a nonnegative integer') from None
+    if isinstance(settings['opening_radius'], (bool, np.bool_)) or radius < 0:
+        raise ValueError('Opening radius must be a nonnegative integer')
+    settings['opening_radius'] = radius
+    return settings
+
+
+def preprocess_mask(mask, *,
+                    filter_by_area=ANALYSIS_DEFAULTS['masks']['preprocessing']['filter_by_area'],
+                    main_body_area=ANALYSIS_DEFAULTS['masks']['preprocessing']['main_body_area'],
+                    filter_by_distance=ANALYSIS_DEFAULTS['masks']['preprocessing']['filter_by_distance'],
+                    fragment_distance=ANALYSIS_DEFAULTS['masks']['preprocessing']['fragment_distance'],
+                    apply_opening=ANALYSIS_DEFAULTS['masks']['preprocessing']['apply_opening'],
+                    opening_radius=ANALYSIS_DEFAULTS['masks']['preprocessing']['opening_radius']):
+    """Return a separate body mask at the supplied image resolution.
+
+    Area filtering retains only the largest 8-connected component when its
+    foreground pixel count exceeds ``main_body_area``. Distance filtering
+    retains the two largest remaining components when their centroid distance
+    is at most ``fragment_distance``; otherwise it retains only the largest.
+    Equal areas retain component scan order. Each disabled filter leaves all
+    current components intact. Opening applies erosion followed by dilation
+    with a disk of ``opening_radius`` pixels (zero skips opening). Pixels
+    outside the image are background. Each step can be disabled independently.
+    Holes remain unless altered by opening; source pixels are never modified.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from bivosia.analysis.masks import preprocess_mask
+    >>> mask = np.zeros((12, 24), dtype=bool)
+    >>> mask[2:6, 2:6] = mask[2:5, 8:11] = mask[9, 21] = True
+    >>> cleaned = preprocess_mask(mask, main_body_area=16, fragment_distance=8, opening_radius=0)
+    >>> int(cleaned.sum()), int(mask.sum())
+    (25, 26)
+    >>> int(preprocess_mask(mask, main_body_area=15, fragment_distance=8, opening_radius=0).sum())
+    16
+    >>> int(preprocess_mask(mask, main_body_area=16, fragment_distance=2, opening_radius=0).sum())
+    16
+    """
+    settings = preprocessing_settings(True, filter_by_area=filter_by_area, main_body_area=main_body_area,
+                                      filter_by_distance=filter_by_distance, fragment_distance=fragment_distance,
+                                      apply_opening=apply_opening, opening_radius=opening_radius)
+    mask = np.asarray(mask)
+    if mask.ndim != 2 or mask.dtype != np.bool_ or not all(mask.shape):
+        raise ValueError('Expected a nonempty two-dimensional boolean image')
+    result = mask.copy()
+    if settings['filter_by_area'] or settings['filter_by_distance']:
+        count, labels, statistics, centers = cv2.connectedComponentsWithStats(
+            mask.astype(np.uint8), connectivity=8)
+        if count == 1:
+            return result
+        areas = statistics[1:, cv2.CC_STAT_AREA]
+        keep = np.argsort(-areas, kind='stable') + 1
+        if settings['filter_by_area'] and areas[keep[0] - 1] > settings['main_body_area']:
+            keep = keep[:1]
+        if settings['filter_by_distance'] and len(keep) > 1:
+            nearby = np.linalg.norm(centers[keep[0]] - centers[keep[1]]) <= settings['fragment_distance']
+            keep = keep[:2] if nearby else keep[:1]
+        result = np.isin(labels, keep)
+    radius = settings['opening_radius']
+    if settings['apply_opening'] and radius:
+        y, x = np.ogrid[-radius:radius + 1, -radius:radius + 1]
+        disk = (x * x + y * y <= radius * radius).astype(np.uint8)
+        result = cv2.morphologyEx(result.astype(np.uint8), cv2.MORPH_OPEN, disk,
+                                  borderType=cv2.BORDER_CONSTANT, borderValue=0) != 0
+    return result

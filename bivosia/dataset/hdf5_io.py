@@ -31,14 +31,20 @@ def inspect_arrays(path):
 
 @contextmanager
 def hdf5_output(path, *, overwrite=True):
-    """Commit a closed HDF5 file on success; retain partial output on failure."""
+    """Commit a closed HDF5 file on success and discard failed partial output."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = auxiliary_path(path, "partial")
     if not overwrite and (path.exists() or partial.exists()):
         raise ValueError("Output or partial output already exists; choose a new filename")
-    with h5py.File(partial, "w" if overwrite else "x") as output:
-        yield output
-    if not overwrite and path.exists():
-        raise ValueError(f"Output appeared during export; completed partial retained at {partial}")
-    partial.replace(path)
+    with partial.open('wb' if overwrite else 'xb'):
+        pass
+    try:
+        with h5py.File(partial, 'w') as output:
+            yield output
+        if not overwrite and path.exists():
+            raise ValueError(f"Output appeared during export: {path}")
+        partial.replace(path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise

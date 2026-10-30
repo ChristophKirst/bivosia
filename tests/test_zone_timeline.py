@@ -18,7 +18,7 @@ import numpy as np
 
 from bivosia.ui.annotations import Zone, annotate_zone_missing, revision_zone
 from bivosia.analysis.alignment import align_scores
-from bivosia.analysis.revision import RevisionZone
+from bivosia.analysis.zones_of_disagreement import RevisionZone
 from bivosia.ui.legend_panel import LegendPanel
 from bivosia.ui.player import FramePlayer, PlayerCursorController
 from bivosia.ui.plot_models import RowSpec, SeriesSpec
@@ -428,6 +428,7 @@ class ZoneTimelineTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         hits = []
         fake = SimpleNamespace(_display_zone_tracks=lambda: tracks, zones=(), global_links=None,
+                               annotation_label='Hand', extra_zone_rows=(),
                                _auto_zone_clicked=lambda *args: hits.append(args),
                                zone_timeline=ZoneTimeline(5), timeline_overview=TimelineOverview(5))
         ZoneVideoViewer._refresh_zone_plots(fake)

@@ -13,8 +13,8 @@ import unittest
 import h5py
 import numpy as np
 
-from bivosia.analysis.zone_detection import prepare_zod_evidence
-from bivosia.analysis.masks import iou_from_intersections
+from bivosia.analysis.zones_of_disagreement import prepare_zod_evidence
+from bivosia.analysis.quality import frame_quality_measures, iou_from_intersections, optimal_assignments
 from bivosia.dataset.analysis import load_quality_evidence
 from bivosia.dataset.arrays import MaskOverlaps, quality_cache_available, read_array
 from bivosia.dataset.layout import Dataset
@@ -59,6 +59,12 @@ class MaskQuantificationTests(unittest.TestCase):
                         temporal[direction, t] = intersections(masks[t], masks[t + 1])
                 np.testing.assert_array_equal(read_array(dataset.array("mask_areas")), areas)
                 np.testing.assert_array_equal(read_array(dataset.array("mask_temporal_intersections")), temporal)
+                quality = read_array(dataset.array('mask_temporal_quality'))
+                self.assertEqual(quality.shape, (2, frames - 1))
+                for direction in range(2):
+                    matrices = iou_from_intersections(temporal[direction], areas[direction, :-1], areas[direction, 1:])
+                    expected_quality = frame_quality_measures(matrices, optimal_assignments(matrices))[0]
+                    np.testing.assert_array_equal(quality[direction], expected_quality)
                 for name in ("mask_areas", "mask_intersections", "mask_temporal_intersections"):
                     self.assertEqual(read_array(dataset.array(name)).dtype, np.dtype("uint32"))
                 with closing(MaskOverlaps(dataset.array("mask_intersections"), dataset.array("mask_areas"))) as counts:
@@ -86,6 +92,7 @@ class MaskQuantificationTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             datasets = [Dataset(Path(temporary) / str(i)) for i in range(2)]
             masks = np.array([[[0, 1, 2], [1, 1, 2]]], dtype=np.uint16)
+            masks = np.repeat(masks, 3, axis=0)
             for dataset in datasets:
                 write_masks(dataset, masks, masks)
             results = quantify_many(datasets, 2, workers=2)
@@ -93,6 +100,7 @@ class MaskQuantificationTests(unittest.TestCase):
             for dataset in datasets:
                 self.assertTrue(dataset.array("mask_intersections").is_file())
                 self.assertFalse(dataset.array("mask_temporal_intersections").exists())
+                np.testing.assert_array_equal(read_array(dataset.array('mask_temporal_quality')), np.ones((2, 2)))
                 self.assertFalse(list(dataset.analysis.glob("*.partial")))
 
     def test_uint32_limits(self):

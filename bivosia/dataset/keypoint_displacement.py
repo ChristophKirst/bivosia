@@ -20,7 +20,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 
 import json
 
-from bivosia.analysis.keypoint_displacement import validate_keypoint_displacement
+from bivosia.analysis.keypoints import validate_keypoint_displacement
 from bivosia.dataset.containers import open_container, container_output
 
 

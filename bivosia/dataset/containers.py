@@ -13,5 +13,5 @@ def open_container(path, *, format=None):
 
 
 def container_output(path, *, overwrite=True, format=None):
-    """Publish a closed container on success, retaining partials on failure."""
+    """Publish a closed container on success and remove failed partial output."""
     return format_handler('containers', path, format=format, operation='writer')(path, overwrite=overwrite)

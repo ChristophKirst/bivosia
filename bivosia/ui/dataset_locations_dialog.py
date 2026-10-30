@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFormLayout, QHB
 
 from bivosia.dataset.layout import Dataset
 from bivosia.dataset.locations import location_for, remote_locations, remote_path, save_locations
+from bivosia.ui.window_manager import notify_dataset_changed
 from bivosia.ui.icons import action_icon
 from bivosia.ui.remote_settings import remote_settings
 
@@ -134,6 +135,7 @@ class DatasetLocationsDialog(QDialog):
                 remote = [entry for entry in remote if entry['host'] != profile['host']]
                 remote.append({'host': profile['host'], 'path': remote_path(path)})
             save_locations(self.dataset, local, remote)
+            notify_dataset_changed(self.dataset)
             self.store.changed.emit()
             self._reload()
             self.status.setText('Location saved.')
@@ -145,6 +147,7 @@ class DatasetLocationsDialog(QDialog):
             return
         try:
             save_locations(self.dataset, *self._without_selected())
+            notify_dataset_changed(self.dataset)
             self.store.changed.emit()
             self._reload()
             self.status.setText('Location removed. Files are unchanged.')

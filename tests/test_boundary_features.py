@@ -13,10 +13,14 @@ from unittest.mock import patch
 import numpy as np
 import cv2
 
-from bivosia.analysis.features import (
-    FFT_FEATURE_NAMES, HU_FEATURE_NAMES, _spectral_boundary_features, feature_names, frame_features,
+from bivosia.analysis.mask_features import (
+    FFT_FEATURE_NAMES,
+    HU_FEATURE_NAMES,
+    _spectral_boundary_features,
+    feature_names,
+    frame_features,
+    mask_measures,
 )
-from bivosia.analysis.measures import mask_measures
 
 
 def _radial_contour(radii: np.ndarray, center=(100.0, 100.0)) -> np.ndarray:
@@ -46,8 +50,8 @@ class BoundaryFeatureTests(unittest.TestCase):
                         frame, 2, previous, **options, include_hu_features=True)
                     enabled.append(values)
                 previous = None
-                with patch('bivosia.analysis.features.cv2.HuMoments', side_effect=AssertionError('Hu calculation')), \
-                     patch('bivosia.analysis.features.cv2.matchShapes', side_effect=AssertionError('Hu shape comparison')):
+                with patch('bivosia.analysis.mask_features.cv2.HuMoments', side_effect=AssertionError('Hu calculation')), \
+                     patch('bivosia.analysis.mask_features.cv2.matchShapes', side_effect=AssertionError('Hu shape comparison')):
                     for frame in labels:
                         values, previous, _, _ = frame_features(
                             frame, 2, previous, **options)
@@ -76,8 +80,8 @@ class BoundaryFeatureTests(unittest.TestCase):
                     names = feature_names(**options)
                     self.assertEqual('convex_hull_perimeter_excess' in names, convex_hull)
                     self.assertEqual(set(FFT_FEATURE_NAMES) & set(names), set(FFT_FEATURE_NAMES) if fft else set())
-                    with patch('bivosia.analysis.features.cv2.convexHull', wraps=cv2.convexHull) as hull_call, \
-                         patch('bivosia.analysis.features._spectral_boundary_features', wraps=_spectral_boundary_features) as fft_call:
+                    with patch('bivosia.analysis.mask_features.cv2.convexHull', wraps=cv2.convexHull) as hull_call, \
+                         patch('bivosia.analysis.mask_features._spectral_boundary_features', wraps=_spectral_boundary_features) as fft_call:
                         values, _, _, _ = frame_features(labels, 1, None, **options)
                     self.assertEqual(hull_call.called, convex_hull)
                     self.assertEqual(fft_call.called, fft)

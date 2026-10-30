@@ -41,10 +41,10 @@ class LinkColors:
         self._base = self._preview = None
 
     def links(self, session):
-        """Cache automatic/approved boundary results without changing annotations."""
+        """Cache saved automatic/approved links without calculating new proposals."""
         base_key = (session, session.revision)
         if base_key != self._base_key:
-            self._base = prepare_links(session, self.data.linking.boundary_match)
+            self._base = prepare_links(session)
             self._base_key = base_key
         return self._base
 

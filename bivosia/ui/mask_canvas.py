@@ -4,14 +4,13 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
-import cv2
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 
-from bivosia.ui.video_panels import ZoomableVideoLabel
+from bivosia.ui.mask_selection import MaskSelectionLabel
 
 
-class MaskCanvas(ZoomableVideoLabel):
+class MaskCanvas(MaskSelectionLabel):
     maskClicked = Signal(float, float)
     pointAdded = Signal(float, float)
     strokeStarted = Signal(float, float)
@@ -21,7 +20,6 @@ class MaskCanvas(ZoomableVideoLabel):
         super().__init__()
         self.tool, self.radius = "Prompt", 3
         self.prompts, self.colors = [], []
-        self.selection = QPainterPath()
         self.pointer = None
         self._stroke = False
         self.setMouseTracking(True)
@@ -39,17 +37,6 @@ class MaskCanvas(ZoomableVideoLabel):
     def pixel(self, point):
         x, y = self._normalized_source_point(point)
         return min(self._image.width() - 1, x * self._image.width()), min(self._image.height() - 1, y * self._image.height())
-
-    def set_selection(self, mask, animal):
-        """Outline the selected animal with a fixed screen-space stroke."""
-        self.selection = QPainterPath()
-        if animal is not None and animal > 0:
-            height, width = mask.shape
-            contours, _ = cv2.findContours((mask == animal).astype("uint8"), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for contour in contours:
-                self.selection.addPolygon(QPolygonF([QPointF(x / width, y / height) for x, y in contour[:, 0]]))
-                self.selection.closeSubpath()
-        self.update()
 
     def brush_rect(self):
         """Return the brush footprint in widget coordinates, or None outside painting."""
@@ -111,13 +98,6 @@ class MaskCanvas(ZoomableVideoLabel):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.save()
-        painter.setClipRect(self._image_rect)
-        outline = self.source_transform().map(self.selection)
-        for color, width in (("black", 7), ("white", 3)):
-            painter.setPen(QPen(QColor(color), width))
-            painter.drawPath(outline)
-        painter.restore()
         for x, y, animal in self.prompts:
             point = self.source_point(x / self._image.width(), y / self._image.height())
             if point is None:

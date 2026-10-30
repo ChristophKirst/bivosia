@@ -13,13 +13,14 @@ import unittest
 import numpy as np
 from PySide6.QtWidgets import QApplication
 
-from bivosia.analysis.mask_cleanup import clean_label_mask
+from bivosia.analysis.masks import clean_label_mask
 from bivosia.config import ANALYSIS_DEFAULTS, DATASET_LAYOUT
 from bivosia.dataset.containers import open_container
 from bivosia.dataset.key_frames import KeyFrameSession, MaskDraft
 from bivosia.dataset.layout import Dataset
 from bivosia.dataset.mask_cleanup import save_cleaned_key_frame
 from bivosia.ui.mask_editor import MaskEditor
+from bivosia.ui.mask_cleanup_dialog import MaskCleanupDialog
 
 
 class MaskCleanupTests(unittest.TestCase):
@@ -60,6 +61,27 @@ class MaskCleanupTests(unittest.TestCase):
             np.testing.assert_array_equal(mask, self.original)
         np.testing.assert_array_equal(self.editor.draft.mask, self.original)
 
+    def test_settings_change_cleanup_without_changing_originals(self):
+        values = dict(contour_min_area=0, contour_max_area=100000, overlap_kernel=1)
+        def choose(dialog):
+            dialog.parameters.set_values(values)
+            dialog.accept()
+            return dialog.result()
+        with patch.object(MaskCleanupDialog, 'exec', choose):
+            self.editor.cleanup_settings_button.click()
+        self.assertEqual(self.editor.cleanup_options, values)
+        self.assertIsNone(self.editor.cleanup_draft)
+        self.assert_originals_unchanged()
+        self.editor.clean_up()
+        np.testing.assert_array_equal(self.editor.active_draft.mask, clean_label_mask(self.original, **values))
+        self.assertEqual(self.editor.cleanup_parameters, values)
+        self.assertTrue(self.editor.save())
+        self.assert_originals_unchanged()
+        with open_container(self.dataset.file('cleaned_key_frame_masks')) as source:
+            self.assertEqual(json.loads(source.attrs['parameters'])['0'], values)
+        for button in (self.editor.undo_button, self.editor.redo_button, self.editor.clear_points_button):
+            self.assertFalse(button.icon().isNull())
+
     def test_preview_undo_and_separate_save_preserve_originals(self):
         cleaned = clean_label_mask(self.original)
         self.assertEqual(int(cleaned[120, 10]), 0)
@@ -70,9 +92,9 @@ class MaskCleanupTests(unittest.TestCase):
         self.assertEqual(self.editor.save_button.text(), 'Save cleaned')
         self.assertFalse(self.dataset.file('cleaned_key_frame_masks').exists())
         self.assert_originals_unchanged()
-        self.editor.history(False)
+        self.editor.undo_button.click()
         np.testing.assert_array_equal(self.editor.active_draft.mask, self.original)
-        self.editor.history(True)
+        self.editor.redo_button.click()
         np.testing.assert_array_equal(self.editor.active_draft.mask, cleaned)
         self.assertTrue(self.editor.save())
         self.assert_originals_unchanged()
@@ -87,7 +109,7 @@ class MaskCleanupTests(unittest.TestCase):
             self.assertEqual(source['frames'][:].tolist(), [0, 1])
             np.testing.assert_array_equal(source['masks'][0], cleaned)
             np.testing.assert_array_equal(source['masks'][1], cleaned)
-            self.assertEqual(json.loads(source.attrs['parameters'])['0'], ANALYSIS_DEFAULTS['mask_cleanup'])
+            self.assertEqual(json.loads(source.attrs['parameters'])['0'], ANALYSIS_DEFAULTS['masks']['cleanup'])
         self.assert_originals_unchanged()
 
     def test_cleanup_keeps_pending_predictions_separate(self):
@@ -112,7 +134,7 @@ class MaskCleanupTests(unittest.TestCase):
         self.assertFalse(self.editor.save_button.isEnabled())
 
     def test_cleaned_output_cannot_replace_originals_or_other_video_results(self):
-        settings = dict(frame_count=2, animals=3, parameters=ANALYSIS_DEFAULTS['mask_cleanup'])
+        settings = dict(frame_count=2, animals=3, parameters=ANALYSIS_DEFAULTS['masks']['cleanup'])
         path = save_cleaned_key_frame(self.dataset, 0, self.original, **settings)
         before = path.read_bytes()
         with self.assertRaises(ValueError):

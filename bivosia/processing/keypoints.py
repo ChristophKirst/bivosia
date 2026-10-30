@@ -17,8 +17,7 @@ import logging
 import numpy as np
 
 from bivosia.config import PROCESSING_DEFAULTS
-from bivosia.analysis.keypoints import keypoint_counts
-from bivosia.analysis.keypoint_displacement import keypoint_displacement
+from bivosia.analysis.keypoints import keypoint_counts, keypoint_displacement
 from bivosia.dataset.keypoints import open_keypoints
 from bivosia.dataset.keypoint_displacement import write_keypoint_displacement
 from bivosia.processing.log import Progress

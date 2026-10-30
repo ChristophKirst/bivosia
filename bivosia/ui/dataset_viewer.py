@@ -19,18 +19,25 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QApplication, QFileDialog, QHeaderView, QHBoxLayout, QLabel, QMenu,
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtWidgets import (QDialog, QFileDialog, QHeaderView, QHBoxLayout, QLabel, QMenu,
                                QMessageBox, QPushButton, QStatusBar,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from bivosia.ui.icons import action_icon
 from bivosia.dataset.formats import file_inspector, format_handler, format_spec, format_suffixes
 from bivosia.dataset.inventory import FileMetadata
+from bivosia.dataset.jobs import is_job_path
+from bivosia.dataset.paths import folder_path
 from bivosia.processing.file_operations import (copy_selected_file, delete_selected_file,
                                                file_locations, move_selected_file)
+from bivosia.processing.folder_operations import (completed_job_entries, delete_folder_entries, folder_entries,
+                                                 plan_folder_transfer, transfer_folder)
 from bivosia.processing.remote_inventory import scan_locations
 from bivosia.ui.dataset_locations_dialog import DatasetLocationsDialog
+from bivosia.ui.consolidation_dialog import ConsolidationDialog
+from bivosia.processing.consolidation import plan_consolidation, consolidate
+from bivosia.processing.input_sync import plan_input_sync
 from bivosia.ui.remote_settings import remote_settings
 from bivosia.ui.colors import identity_colors
 from bivosia.ui.dock_panel import PanelSplitter
@@ -39,6 +46,7 @@ from bivosia.ui.plot_models import LegendGroup
 from bivosia.ui.task import Task
 from bivosia.ui.text_preview import TextPreview, create_text_view
 from bivosia.ui.video_preview import VideoPreview
+from bivosia.ui.window_manager import notify_dataset_changed
 
 
 def _file_size(size):
@@ -74,6 +82,8 @@ class DatasetWidget(QWidget):
     Select text or video to preview it below the tree. Text can open in a separate window.
     """
 
+    transfer_status = Signal(str)
+
     def __init__(self, dataset, parent=None):
         super().__init__(parent)
         self.dataset = dataset
@@ -81,8 +91,13 @@ class DatasetWidget(QWidget):
         self.info_task = None
         self.text_task = None
         self.file_task = None
+        self._sync_callback = None
+        self._pending_sync = None
         self._pending_file = None
         self._file_error = ''
+        self._entries = ()
+        self._folder_transfer = None
+        self._job_cleanup = None
         self._refresh_message = ''
         self._generation = 0
         self._headers = {}
@@ -110,6 +125,10 @@ class DatasetWidget(QWidget):
         self.locations_button.setIcon(action_icon('files'))
         self.locations_button.clicked.connect(self.edit_locations)
         toolbar.addWidget(self.locations_button)
+        self.consolidate_button = QPushButton('Consolidate…')
+        self.consolidate_button.setIcon(action_icon('files'))
+        self.consolidate_button.clicked.connect(self._consolidate_menu)
+        toolbar.addWidget(self.consolidate_button)
         self.refresh_button = QPushButton('Refresh')
         self.refresh_button.setIcon(action_icon('refresh'))
         self.refresh_button.clicked.connect(self.refresh)
@@ -150,6 +169,7 @@ class DatasetWidget(QWidget):
         self.status = QStatusBar(self)
         self.status.messageChanged.connect(lambda message: self.status.setToolTip(message))
         layout.addWidget(self.status)
+        self.transfer_status.connect(self.status.showMessage)
         self.refresh()
 
     def refresh(self):
@@ -177,19 +197,175 @@ class DatasetWidget(QWidget):
         DatasetLocationsDialog(self.dataset, self).exec()
         self.refresh()
 
+    def prepare_processing_sync(self, operation, location, callback, *, annotation=None, settings=None):
+        if self.file_task is not None or self._pending_file is not None or self._sync_callback is not None:
+            raise ValueError('Finish the current dataset file operation before preparing another job')
+        profiles = tuple(remote_settings().installations.values())
+        self._sync_callback = callback
+        def plan():
+            self._consolidation_plan = plan_input_sync(self.dataset, location, profiles, operation,
+                annotation=annotation, settings=settings, progress=self.transfer_status.emit)
+        self._pending_sync = plan
+        self._start_sync()
+
+    def _start_sync(self):
+        if self._pending_sync is not None and self.scan_task is None:
+            function, self._pending_sync = self._pending_sync, None
+            self._start_file_operation(None, function, 'Checking required processing inputs…')
+
+    def _sync_finished(self, success, message=''):
+        callback, self._sync_callback = self._sync_callback, None
+        if callback is not None:
+            callback(success, message)
+
+    def _consolidate_menu(self):
+        if self.scan_task is not None or self.file_task is not None or self._pending_file is not None:
+            return
+        menu = QMenu(self)
+        for location in file_locations(self.dataset):
+            label = (location['host'] + ':' if location['host'] else '') + location['path']
+            menu.addAction(label).triggered.connect(lambda checked=False, target=location: self._plan_consolidation(target))
+        menu.exec(self.consolidate_button.mapToGlobal(self.consolidate_button.rect().bottomLeft()))
+        menu.deleteLater()
+
+    def _plan_consolidation(self, location):
+        profiles = tuple(remote_settings().installations.values())
+        self._consolidation_plan = None
+        def plan():
+            result = plan_consolidation(self.dataset, location, profiles, self.transfer_status.emit)
+            self._consolidation_plan = result
+        self._start_file_operation(None, plan, 'Checking files before consolidation…')
+
+    def _confirm_consolidation(self):
+        plan, self._consolidation_plan = self._consolidation_plan, None
+        folder, self._folder_transfer = self._folder_transfer, None
+        if self._closed or plan is None:
+            return
+        choices = {}
+        if plan.conflicts:
+            options = {'action': folder[2], 'scope': f'contents of {folder[0]}'} if folder else {}
+            dialog = ConsolidationDialog(plan, self, **options)
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            choices = dialog.choices()
+            dialog.deleteLater()
+            if not accepted:
+                self._sync_finished(False)
+                self.refresh()
+                return
+        profiles = tuple(remote_settings().installations.values())
+        if folder:
+            relative, entries, action = folder
+            self._start_file_operation(None, lambda: transfer_folder(
+                self.dataset, entries, plan, choices, profiles, move=action == 'Move',
+                progress=self.transfer_status.emit), f'{action}: {relative}…')
+            return
+        self._start_file_operation(None, lambda: consolidate(self.dataset, plan, choices, profiles,
+                                                           self.transfer_status.emit),
+                                   'Consolidating dataset…' if plan.complete else 'Synchronizing required inputs…')
+
     def _file_menu(self, position):
         if self.scan_task is not None or self.file_task is not None or self._pending_file is not None:
             return
         item = self.tree.itemAt(position)
+        relative = item.data(0, Qt.ItemDataRole.UserRole + 1) if item is not None else None
+        if relative is not None:
+            self._folder_menu(position, Path(relative))
+            return
         entry = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
         if entry is None or entry.is_directory or entry.error:
             return
         menu = QMenu(self)
-        self._destination_menu(menu, entry, 'Move', move_selected_file)
-        self._destination_menu(menu, entry, 'Copy', copy_selected_file)
+        if not is_job_path(entry.relative):
+            self._destination_menu(menu, entry, 'Move', move_selected_file)
+            self._destination_menu(menu, entry, 'Copy', copy_selected_file)
         menu.addAction('Delete…').triggered.connect(lambda: self._delete_file(entry))
         menu.exec(self.tree.viewport().mapToGlobal(position))
         menu.deleteLater()
+
+    def _folder_menu(self, position, relative):
+        try:
+            entries = folder_entries(self._entries, relative)
+        except ValueError as error:
+            self.status.showMessage(str(error))
+            return
+        if not entries:
+            return
+        menu = QMenu(self)
+        for label in (() if is_job_path(relative) else ('Move', 'Copy')):
+            destinations = menu.addMenu(label)
+            for location in file_locations(self.dataset):
+                host, path = location['host'], location['path']
+                action = destinations.addAction(f'{host}:{path}' if host else path)
+                action.setEnabled(any(entry.host != host or entry.path != Path(path) / entry.relative
+                                      for entry in entries))
+                action.triggered.connect(lambda checked=False, target=location, operation=label:
+                                         self._transfer_folder(relative, entries, target, operation))
+        if relative == folder_path('jobs'):
+            menu.addAction('Clean up completed jobs…').triggered.connect(lambda: self._plan_job_cleanup(entries))
+        menu.addAction('Delete…').triggered.connect(lambda: self._delete_folder(relative, entries))
+        menu.exec(self.tree.viewport().mapToGlobal(position))
+        menu.deleteLater()
+
+    def _transfer_folder(self, relative, entries, location, action):
+        profiles = tuple(remote_settings().installations.values())
+        self._consolidation_plan = None
+        self._folder_transfer = relative, entries, action
+        def plan():
+            self._consolidation_plan = plan_folder_transfer(self.dataset, entries, location, profiles,
+                                                           self.transfer_status.emit)
+        self._start_file_operation(None, plan, f'Checking {relative} before {action.lower()}…')
+
+    def _delete_folder(self, relative, entries):
+        paths = sorted({(entry.host + ':' if entry.host else '') + str(entry.path)
+                        for entry in entries if entry.relative == relative})
+        # Synthetic parents can represent externally referenced files without a folder entry.
+        if not paths:
+            paths = sorted({str(entry.source) for entry in entries})
+        count = sum(not entry.is_directory for entry in entries)
+        self._confirm_delete_entries(entries, 'Delete folder contents',
+                                     f'Permanently delete {count} files and their folders under {relative}?\n\n'
+                                     + '\n'.join(paths))
+
+    def _plan_job_cleanup(self, entries):
+        profiles = tuple(remote_settings().installations.values())
+        def plan():
+            self._job_cleanup = completed_job_entries(self.dataset, entries, profiles)
+        self._start_file_operation(None, plan, 'Checking completed jobs…')
+
+    def _confirm_job_cleanup(self):
+        entries, self._job_cleanup = self._job_cleanup, None
+        if self._closed:
+            return
+        if not entries:
+            self._refresh_message = 'No completed jobs to clean up'
+            self.refresh()
+            return
+        jobs = [entry for entry in entries if entry.is_directory and
+                entry.relative.parent == folder_path('jobs')]
+        paths = sorted((entry.host + ':' if entry.host else '') + str(entry.path) for entry in jobs)
+        count = sum(not entry.is_directory for entry in entries)
+        self._confirm_delete_entries(entries, 'Clean up completed jobs',
+                                     f'Permanently delete {len(jobs)} completed jobs and their logs ({count} files)?\n'
+                                     'Analysis results are kept.\n\n' + '\n'.join(paths))
+
+    def _confirm_delete_entries(self, entries, title, message):
+        dialog = QMessageBox(QMessageBox.Icon.Warning, title, message, parent=self)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setDetailedText('\n'.join((entry.host + ':' if entry.host else '') + str(entry.path)
+                                        for entry in entries))
+        delete = dialog.addButton('Delete', QMessageBox.ButtonRole.DestructiveRole)
+        cancel = dialog.addButton(QMessageBox.StandardButton.Cancel)
+        dialog.setDefaultButton(cancel)
+        dialog.exec()
+        confirmed = dialog.clickedButton() is delete
+        dialog.deleteLater()
+        if confirmed:
+            profiles = tuple(remote_settings().installations.values())
+            self._start_file_operation(None, lambda: delete_folder_entries(
+                self.dataset, entries, profiles, self.transfer_status.emit), 'Deleting selected contents…')
+        else:
+            self.refresh_button.setEnabled(True)
+            self.status.clearMessage()
 
     def _destination_menu(self, menu, entry, label, operation):
         destinations = menu.addMenu(label)
@@ -236,12 +412,14 @@ class DatasetWidget(QWidget):
         self._header_queue.clear()
         self._text_queue.clear()
         self._clear_preview()
-        window = self._text_windows.get(entry.path)
-        if window is not None:
+        windows = ([self._text_windows[entry.path]] if entry is not None and entry.path in self._text_windows else
+                   list(self._text_windows.values()) if entry is None else [])
+        for window in windows:
             window.close()
         self.tree.setEnabled(False)
         self.refresh_button.setEnabled(False)
         self.locations_button.setEnabled(False)
+        self.consolidate_button.setEnabled(False)
         self.status.showMessage(message)
         self._pending_file = function
         self._file_error = ''
@@ -262,22 +440,26 @@ class DatasetWidget(QWidget):
         self.file_task = None
         self.tree.setEnabled(True)
         self.locations_button.setEnabled(True)
+        self.consolidate_button.setEnabled(True)
         self._refresh_message = self._file_error
-        self.refresh()
+        if self._job_cleanup is not None and not self._file_error:
+            QTimer.singleShot(0, self._confirm_job_cleanup)
+        elif getattr(self, '_consolidation_plan', None) is not None and not self._file_error:
+            QTimer.singleShot(0, self._confirm_consolidation)
+        else:
+            self._folder_transfer = None
+            self._job_cleanup = None
+            self._sync_finished(not self._file_error, self._file_error)
+            notify_dataset_changed(self.dataset)
+            self.refresh()
 
     def _task(self, function, ready, failed, finished):
-        # Application ownership lets background file work finish after a window closes.
-        application = QApplication.instance()
-        task = Task(function, application)
-        self.destroyed.connect(task.requestInterruption)
-        application.aboutToQuit.connect(task.wait)
-        task.ready.connect(ready)
-        task.failed.connect(failed)
-        task.finished.connect(finished)
-        task.finished.connect(task.deleteLater)
+        task = Task(function, self)
+        task.connect_callbacks(ready=ready, failed=failed, finished=finished)
         return task
 
     def _show_files(self, entries):
+        self._entries = tuple(entries)
         roots = tuple(dict.fromkeys((*self.dataset.roots, *(entry.source for entry in entries if entry.source))))
         colors = dict(zip(roots, identity_colors(len(roots), .58)))
         self.locations_label.setText('<br>'.join(
@@ -298,6 +480,7 @@ class DatasetWidget(QWidget):
         def folder(relative):
             if relative not in folders:
                 folders[relative] = row(folder(relative.parent), relative.name)
+                folders[relative].setData(0, Qt.ItemDataRole.UserRole + 1, str(relative))
             return folders[relative]
 
         for entry in entries:
@@ -340,6 +523,7 @@ class DatasetWidget(QWidget):
     def _scan_finished(self):
         self.scan_task = None
         self.refresh_button.setEnabled(True)
+        self._start_sync()
 
     def _selection_changed(self, current, previous):
         self._selected = None
@@ -491,6 +675,8 @@ class DatasetWidget(QWidget):
         self._next_header()
 
     def closeEvent(self, event):
+        self._sync_finished(False)
+        self._pending_sync = None
         self._closed = True
         self._selected = None
         self._text_queue.clear()

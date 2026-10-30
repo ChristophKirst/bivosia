@@ -17,13 +17,16 @@ from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 import hashlib
 import json
+import math
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from bivosia.config import ANALYSIS_DEFAULTS
-from bivosia.analysis.masks import frame_iou_matrix, frame_quality_measures, mask_presence, optimal_assignments, relabel_mask
-from bivosia.analysis.revision import segments
+from bivosia.analysis.quality import frame_iou_matrix, frame_quality_measures, optimal_assignments
+from bivosia.analysis.mask_features import mask_presence
+from bivosia.analysis.masks import relabel_mask
+from bivosia.analysis.zones_of_disagreement import segments, zone_has_missing_masks
 
 
 def permutation(values, n):
@@ -148,6 +151,22 @@ def initial_draft(boundary):
             "mapping": None, "manual": False}
 
 
+def automatic_link(job, mask, n):
+    """Propagate the incoming pass through invalid frames before matching passes.
+
+    Adjacent valid endpoints use their direct optimal IoU assignment. Across
+    an invalid interval, labels stay in the incoming pass until the next valid
+    frame, where its masks are matched to the outgoing pass at that same frame.
+    """
+    left_frame = job.right.start if job.skipped_frames else job.left.end
+    match = match_masks(mask(job.left.source, left_frame), mask(job.right.source, job.right.start), n)
+    draft = dict(initial_draft(job), left_frame=left_frame, mapping=list(match.mapping),
+                 canonical_mapping=list(match.mapping))
+    return {'context': job.context, 'status': 'automatic', 'draft': None, 'approved': None,
+            'automatic': draft, 'quality': match.quality if math.isfinite(match.quality) else None,
+            'warnings': list(match.warnings)}
+
+
 def validate_draft(draft, n, frame_count):
     if not all(0 <= draft[f"{side}_frame"] < frame_count for side in ("left", "right")):
         raise ValueError("Link frames must lie inside the video")
@@ -241,10 +260,11 @@ class BoundaryLinks:
                           self.errors + tuple(errors), self.jobs, automatic)
 
 
-def prepare_links(session, boundary_match):
-    """Use approved links and unique positive-overlap matches at adjacent boundaries.
+def prepare_links(session, boundary_match=None):
+    """Resolve saved approved/automatic links, optionally proposing missing links.
 
-    Automatic matches use only the selected masks at the boundary endpoints.
+    Without a callback, unresolved boundaries remain unlinked. With a callback,
+    adjacent-boundary proposals use the selected masks at their endpoints.
     Their quality is the minimum signed row/column IoU margin of the selected
     assignment. Invalid bridges and incomplete or tied matches need review.
     Manual or moved-anchor drafts remain pending until approved.
@@ -256,11 +276,18 @@ def prepare_links(session, boundary_match):
         try:
             record = session.links.get(job.id, {})
             mapping = approved_mapping(job, record, session.n, session.frame_count)
+            if (mapping is None and record.get('status') == 'automatic'
+                    and record.get('context') == job.context):
+                proposal = record['automatic']
+                validate_draft(proposal, session.n, session.frame_count)
+                mapping = permutation(proposal['canonical_mapping'], session.n)
+                automatic[job.id] = Match(mapping, tuple(record.get('warnings', ())),
+                                          float(record['quality']) if record.get('quality') is not None else float('nan'))
             draft = record.get('draft')
             edited = draft is not None and (draft.get('manual') or any(
                 draft[key] != value for key, value in initial_draft(job).items()
                 if key not in ('mapping', 'manual')))
-            if mapping is None and not job.skipped_frames and not edited:
+            if mapping is None and boundary_match is not None and not job.skipped_frames and not edited:
                 match = boundary_match(job)
                 if not match.warnings and np.isfinite(match.quality):
                     mapping = match.mapping
@@ -272,10 +299,34 @@ def prepare_links(session, boundary_match):
     return BoundaryLinks(partition, jobs, mappings, session.n, tuple(errors), automatic)
 
 
+def unresolved_links(session):
+    """Select unlinked boundaries without replacing drafts or approvals."""
+    links = prepare_links(session)
+    return tuple(job for job in links.jobs if job.id not in links.mappings
+                 and session.links.get(job.id, {}).get('draft') is None
+                 and session.links.get(job.id, {}).get('approved') is None)
+
+
+def critical_links(links):
+    """Select unresolved links and automatic links with warnings or invalid bridges.
+
+    Use saved assignments and diagnostics. A valid manual approval acknowledges
+    existing warnings; an invalidated approval remains unresolved.
+    """
+    result = []
+    for job in links.jobs:
+        match = links.automatic.get(job.id)
+        if job.id not in links.mappings or (match is not None and (
+                match.warnings or not np.isfinite(match.quality) or job.skipped_frames)):
+            result.append(job)
+    return tuple(result)
+
+
 def validation_errors(session, links):
     """Check reviewed zones, automatic/approved links and chosen-mask completeness."""
+    accepted = {'reviewed', 'automatic'} if session.header.get('mode') == 'automatic' else {'reviewed'}
     errors = [f"Zone {i + 1} ({z.start}–{z.end}) has not been reviewed"
-              for i, z in enumerate(session.zones) if z.status != "reviewed"]
+              for i, z in enumerate(session.zones) if z.status not in accepted]
     resolved = links.resolve()
     errors.extend(resolved.errors)
     errors.extend(f'Boundary needs review at {job.left.end} → {job.right.start}'
@@ -283,8 +334,8 @@ def validation_errors(session, links):
     if len(set(resolved.components.values())) > 1:
         errors.append("Valid segments are not all linked to the first identity component")
     for z in session.zones:
-        missing = session.missing_forward if z.source == "forward" else session.missing_reverse
-        if z.source != "invalid" and missing[z.start:z.end + 1].any():
+        if zone_has_missing_masks(z, session.missing_forward, session.missing_reverse,
+                                  automatic=session.header.get('mode') == 'automatic'):
             errors.append(f"Zone {z.start}–{z.end}: chosen direction still contains missing masks; split or mark invalid")
     return errors
 
@@ -315,7 +366,7 @@ class Linker:
         return match.mapping, warnings
 
     def draft(self, job, record, seed):
-        draft = dict(record.get("draft") or record.get("approved") or initial_draft(job))
+        draft = dict(record.get("draft") or record.get("approved") or record.get('automatic') or initial_draft(job))
         draft.pop("canonical_mapping", None)
         warnings = list(draft.get("transport_warnings", []))
         match = match_masks(self.mask(draft["left_source"], draft["left_frame"]),
@@ -389,17 +440,32 @@ class Linker:
         self.boundary_match.cache_clear()
 
 
+def automatic_zone_frames(session):
+    """Identify automatic zones where one missing animal is permitted."""
+    frames = np.zeros(session.frame_count, dtype=bool)
+    if session.header.get('mode') == 'automatic':
+        for zone in session.zones:
+            if zone.status == 'automatic':
+                frames[zone.start:zone.end + 1] = True
+    return frames
+
+
+def preferred_mask(mask, mapping, n, *, allow_missing=False):
+    """Validate the chosen mask and apply its saved global identity mapping."""
+    if (~mask_presence(mask, n)).sum() > int(allow_missing):
+        raise ValueError("Chosen masks are missing; split the zone or mark it invalid")
+    return relabel_mask(mask, mapping)
+
+
 def linked_frame(forward, reverse, source, mapping, n, *, quality=None, switch=False,
-                 seed=ANALYSIS_DEFAULTS['zone_detection']['theta_quality']):
+                 seed=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_quality'], allow_missing=False):
     """Return relabeled directions, source code and directional validity."""
     empty = np.zeros(forward.shape, dtype=np.uint16)
     if source == "invalid":
         return {"preferred": empty, "forward": empty, "reverse": empty}, 2, (False, False)
     masks = {"forward": forward, "reverse": reverse}
     raw = masks[source]
-    if not mask_presence(raw, n).all():
-        raise ValueError("Chosen masks are missing; split the zone or mark it invalid before exporting")
-    preferred = relabel_mask(raw, mapping)
+    preferred = preferred_mask(raw, mapping, n, allow_missing=allow_missing)
     other = "reverse" if source == "forward" else "forward"
     match = match_masks(raw, masks[other], n)
     uncertain = quality is not None and (not np.isfinite(quality) or quality < seed)

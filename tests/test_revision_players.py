@@ -4,11 +4,13 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSettings, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QVBoxLayout, QWidget
@@ -18,8 +20,9 @@ from bivosia.ui.playback import (
     link_loops, next_frame, padded_loop, upcoming_frames, zone_loop,
 )
 from bivosia.dataset.session import RevisionSession
-from bivosia.analysis.linking import boundaries, validate_draft
-from bivosia.analysis.revision import RevisionZone
+from bivosia.analysis.linking import automatic_link, boundaries, critical_links, initial_draft, validate_draft
+from bivosia.analysis.zones_of_disagreement import RevisionZone, critical_zones
+from bivosia.ui.link_colors import LinkColors
 from bivosia.ui.plot_models import IntervalSpec, IntervalTrack, RowSpec
 from bivosia.ui.quality_plot import GraphTimeline
 from bivosia.ui.revision_linking_editor import RevisionLinkingWindow
@@ -95,6 +98,94 @@ class PlayerWidgetTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_critical_zone_navigation_skips_ordinary_automatic_choices(self):
+        missing = np.zeros(80, dtype=int)
+        missing[40] = missing[50] = 1
+        zones = [RevisionZone('first', 0, 4, status='automatic'),
+                 RevisionZone('ordinary', 10, 14, status='automatic'),
+                 RevisionZone('invalid', 20, 24, source='invalid', status='automatic'),
+                 RevisionZone('edited', 30, 34, status='needs_review'),
+                 RevisionZone('incomplete', 40, 44, status='reviewed'),
+                 RevisionZone('permitted', 50, 54, status='automatic'),
+                 RevisionZone('last', 60, 64, status='reviewed')]
+        session = RevisionSession({'mode': 'automatic'}, (), zones, missing, np.zeros(80, int), 2)
+        window = RevisionLinkingWindow()
+        window.session, window.zone_id = session, 'first'
+        try:
+            self.assertFalse(window.zone_critical_only.isChecked())
+            before, revision = session._state(), session.revision
+            critical = critical_zones(zones, session.missing_forward, session.missing_reverse, automatic=True)
+            self.assertEqual([z.id for z in critical], ['invalid', 'edited', 'incomplete'])
+            self.assertEqual(session._state(), before)
+            self.assertEqual(session.revision, revision)
+            with patch.object(window, 'select_zone', side_effect=lambda key: setattr(window, 'zone_id', key)), \
+                 patch.object(window, '_edit', side_effect=lambda operation: session.edit(window.zone_id, operation)):
+                window.next_zone()
+                self.assertEqual(window.zone_id, 'ordinary')
+                window.zone_critical_only.setChecked(True)
+                window.next_zone()
+                self.assertEqual(window.zone_id, 'invalid')
+                window.approve_zone()
+                self.assertEqual(window.zone_id, 'edited')
+                self.assertEqual(session.zones[2].status, 'reviewed')
+                window.approve_zone()
+                self.assertEqual(window.zone_id, 'incomplete')
+                window.next_zone()
+                self.assertEqual(window.zone_id, 'incomplete')
+                self.assertEqual(window.message.text(), 'No later critical zones.')
+                window.zone_critical_only.setChecked(False)
+                window.next_zone()
+                self.assertEqual(window.zone_id, 'permitted')
+        finally:
+            window.session = None
+            window.close()
+
+    def test_critical_link_navigation_uses_saved_warnings_and_acknowledges_approval(self):
+        missing = np.zeros(100, dtype=int)
+        session = RevisionSession({'mode': 'automatic'}, (),
+                                  [RevisionZone('invalid', 70, 79, source='invalid', status='automatic')],
+                                  missing, missing, 2, link_frames=(9, 19, 29, 39, 49, 59))
+        labels = np.array([[1, 0], [0, 2]], dtype=np.uint8)
+        jobs = session.jobs
+        session.links = {j.id: automatic_link(j, lambda source, frame: labels, 2) for j in jobs}
+        session.links[jobs[1].id]['warnings'] = ['Hungarian proposal is ambiguous (tied assignments)']
+        session.links[jobs[2].id]['quality'] = None
+        session.set_draft(jobs[3].id, dict(initial_draft(jobs[3]), mapping=[0, 1], manual=True))
+        session.links[jobs[4].id]['warnings'] = ['Some proposed pairs have zero pixel overlap']
+        session.set_draft(jobs[4].id, dict(initial_draft(jobs[4]), mapping=[0, 1], manual=True))
+        session.approve(jobs[4].id, (0, 1))
+        session.links[jobs[5].id]['context'] = 'stale'
+        window = RevisionLinkingWindow()
+        window.session, window.job_id = session, jobs[0].id
+        window.link_colors = LinkColors(None)
+        try:
+            self.assertFalse(window.link_critical_only.isChecked())
+            before, revision = session._state(), session.revision
+            with patch('bivosia.analysis.linking.match_masks', side_effect=AssertionError('Recomputed masks')):
+                links = window.link_colors.links(session)
+                self.assertEqual([j.id for j in critical_links(links)], [jobs[i].id for i in (1, 2, 3, 5, 6)])
+            self.assertEqual(session._state(), before)
+            self.assertEqual(session.revision, revision)
+            with patch.object(window, 'select_boundary', side_effect=lambda key: setattr(window, 'job_id', key)), \
+                 patch.object(window, '_refresh'), patch.object(window, 'save'):
+                window.next_boundary()
+                self.assertEqual(window.job_id, jobs[3].id)
+                window.job_id = jobs[0].id
+                window.link_critical_only.setChecked(True)
+                window.next_boundary()
+                self.assertEqual(window.job_id, jobs[1].id)
+                window.draft = dict(initial_draft(jobs[1]), mapping=[0, 1])
+                window.data = SimpleNamespace(linking=SimpleNamespace(canonical_mapping=lambda *args: ((0, 1), [])))
+                window.approve_link()
+                self.assertEqual(session.links[jobs[1].id]['status'], 'approved')
+                self.assertEqual(window.job_id, jobs[2].id)
+                window.job_id = jobs[-1].id
+                window.next_boundary()
+                self.assertEqual(window.job_id, jobs[2].id)
+        finally:
+            window.session = window.data = None
+            window.close()
+
     def test_arrow_keys_target_players_without_changing_loop_bounds(self):
         window = QWidget()
         layout = QVBoxLayout(window)
@@ -164,7 +255,10 @@ class PlayerWidgetTests(unittest.TestCase):
         legend.setStyleSheet("QCheckBox { color: red; }")
         plot = GraphTimeline(10)
         plot.setParent(root)
-        controller = FontZoomController(self.app)
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        settings = QSettings(str(Path(temporary.name) / 'preferences.ini'), QSettings.Format.IniFormat)
+        controller = FontZoomController(self.app, settings=settings)
         try:
             target = controller.default_point_size + 2
             controller.set_point_size(target)
@@ -363,20 +457,20 @@ class PlayerWidgetTests(unittest.TestCase):
             title = "Zone" if key.startswith("zone") else "Link"
             self.assertEqual(window.active_viewer, title)
             self.assertEqual(window.active_cursor, key)
-            self.assertIs(window.tabs.currentWidget(), window.zone_list if title == "Zone" else window.boundary_list)
+            self.assertEqual(window.annotation_mode, title)
             self.assertTrue(window.viewers[title].isVisible())
             self.assertEqual(len(plot.cursors), 9)
             self.assertEqual([(p.frame, p.bounds) for p in window.players.values()], state)
             self.assertIs(window.draft, draft)
         window._select_cursor("zone")
-        self.assertIs(window.tabs.currentWidget(), window.boundary_list)
+        self.assertEqual(window.annotation_mode, "Link")
 
     def test_panel_dividers_are_visible_without_plots_title(self):
         window = RevisionLinkingWindow()
         self.addCleanup(window.close)
         window.show()
         self.app.processEvents()
-        self.assertEqual(window.centralWidget().handle(1).width(), 5)
+        self.assertEqual(window.centralWidget().x() - window.sidebar_dock.geometry().right() - 1, 5)
         plots = window.panel_docks["Plots"]
         self.assertEqual(plots.windowTitle(), "")
         self.assertEqual(plots.y() - window.panel_docks["Zone"].geometry().bottom() - 1, 5)
@@ -385,7 +479,7 @@ class PlayerWidgetTests(unittest.TestCase):
         plots.setFloating(False)
         self.assertFalse(plots.isFloating())
 
-    def test_each_plot_has_its_own_height_and_keeps_its_legend(self):
+    def test_analysis_panels_start_hidden_and_reopen_with_synchronized_plots(self):
         window = RevisionLinkingWindow()
         self.addCleanup(window.close)
         values = np.arange(100, dtype=float)
@@ -395,8 +489,8 @@ class PlayerWidgetTests(unittest.TestCase):
         window.data = None
         splitter = window.plots_holder
         self.assertEqual(splitter.orientation(), Qt.Orientation.Vertical)
-        self.assertEqual([splitter.widget(i) for i in range(4)],
-                         [window.overview, window.zone_panel, window.quality_panel, window.feature_panel])
+        self.assertEqual([splitter.widget(i) for i in range(splitter.count())],
+                         [window.overview, window.zone_panel])
         self.assertIs(window.zone_panel.legend.parentWidget(), window.zone_plot.parentWidget())
         self.assertLess(window.zone_panel.layout().indexOf(window.zone_panel.legend),
                         window.zone_panel.layout().indexOf(window.zone_plot))
@@ -409,38 +503,50 @@ class PlayerWidgetTests(unittest.TestCase):
         self.assertEqual(
             window.quality_panel.layout().indexOf(window.quality_plot), 1
         )
-        dock = window.panel_docks["Plots"]
-        dock.setFloating(True)
-        dock.resize(1100, 1000)
-        dock.show()
+        window.show()
         self.app.processEvents()
-        splitter.setSizes((200, 250, 250, 250))
-        for index in range(1, 4):
-            before = splitter.sizes()
-            handle = splitter.handle(index)
-            self.assertEqual(handle.height(), 5)
-            splitter.moveSplitter(handle.y() + 25, index)
-            self.app.processEvents()
-            after = splitter.sizes()
-            self.assertGreater(after[index - 1], before[index - 1])
-            self.assertLess(after[index], before[index])
-        self.assertGreater(window.overview.height(), 100)
-        for panel in (window.quality_panel, window.feature_panel):
-            before = panel.height()
-            panel.set_expanded(False)
-            self.app.processEvents()
-            self.assertLess(panel.height(), before)
-            panel.set_expanded(True)
+        for title, panel in (("Quality", window.quality_panel), ("Features", window.feature_panel)):
+            dock = window.panel_docks[title]
+            action = dock.toggleViewAction()
+            self.assertIs(dock.widget(), panel)
+            self.assertTrue(dock.isHidden())
+            self.assertFalse(action.isChecked())
+            self.assertIn(action, window.view_menu.actions())
+            action.trigger()
             self.app.processEvents()
             self.assertTrue(panel.graph.isVisible())
+            dock.setFloating(True)
+            self.assertTrue(dock.isFloating())
+            dock.close()
+            self.assertFalse(action.isChecked())
+            action.trigger()
+            self.app.processEvents()
+            self.assertTrue(dock.isVisible())
+            self.assertTrue(panel.graph.isVisible())
+            dock.setFloating(False)
+        for index, plot in enumerate((window.zone_plot, window.quality_plot, window.feature_plot)):
+            plot.set_view(10 + index, 70 + index)
+            plot.viewChanged.emit(plot.view_start, plot.view_end)
+            self.assertEqual(window.zone_plot.display_range(), window.quality_plot.display_range())
+            self.assertEqual(window.feature_plot.display_range(), window.quality_plot.display_range())
+        for dock in (*window.annotation_docks.values(), window.processing_dock):
+            dock.close()
+            self.assertTrue(dock.isHidden())
+            dock.toggleViewAction().trigger()
+            self.app.processEvents()
+            self.assertFalse(dock.isHidden())
+        window.panel_docks["Quality"].close()
         window.data = SimpleNamespace(count=100, n=2, quality=values / 100, assigned_iou=values / 100,
                                       measures={}, measure_labels={})
         window._build_plots()
         window.data = None
-        self.assertEqual(splitter.count(), 4)
-        self.assertTrue(window.feature_panel.isHidden())
+        self.assertEqual(splitter.count(), 2)
+        self.assertTrue(window.panel_docks["Quality"].isHidden())
+        self.assertTrue(window.panel_docks["Features"].isVisible())
+        self.assertFalse(window.feature_plot.series)
+        self.assertIs(window.panel_docks["Features"].widget(), window.feature_panel)
 
-    def test_zone_double_click_selects_and_opens_zone_from_timelines_and_list(self):
+    def test_zone_click_selects_and_double_click_focuses_from_timelines_and_list(self):
         window = RevisionLinkingWindow()
         missing = np.zeros(1000, bool)
         zones = [RevisionZone("a", 100, 180), RevisionZone("b", 500, 600)]
@@ -468,11 +574,17 @@ class PlayerWidgetTests(unittest.TestCase):
                     plot.set_view(0, 999)
                     row = next(rect for spec, rect in plot.row_rects() if spec.key == "annotations")
                     x = plot.frame_to_x((zone.start + zone.end) / 2, plot._plot_rect(), *plot.display_range())
+                    QTest.mouseClick(plot, Qt.MouseButton.LeftButton, pos=QPointF(x, row.center().y()).toPoint())
+                    self.assertEqual(window.zone_id, zone.id)
+                    self.assertEqual(window.zone_list.currentItem().data(Qt.ItemDataRole.UserRole), zone.id)
+                    self.assertEqual((window.start_frame.value(), window.end_frame.value()), (zone.start, zone.end))
+                    self.assertEqual(window.source.currentText(), zone.source)
+                    self.assertEqual(window.annotation_mode, "Zone")
                     QTest.mouseDClick(plot, Qt.MouseButton.LeftButton, pos=QPointF(x, row.center().y()).toPoint())
                     self.assertEqual(window.zone_id, zone.id)
                     self.assertEqual(window.players["zone"].frame, zone.start)
                     self.assertEqual(window.players["zone"].bounds, zone_loop(zone, 1000))
-                    self.assertIs(window.tabs.currentWidget(), window.zone_list)
+                    self.assertEqual(window.annotation_mode, "Zone")
                     self.assertEqual(window.active_viewer, "Zone")
                     self.assertEqual(window.active_cursor, "zone")
                     self.assertEqual((window.start_frame.value(), window.end_frame.value()), (zone.start, zone.end))

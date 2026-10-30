@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from bivosia.analysis.measures import direction_difference
+from bivosia.analysis.quality import direction_difference
 
 
 METRIC_ENVELOPES = {

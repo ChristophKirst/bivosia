@@ -3,10 +3,13 @@
 Examples
 --------
 >>> from bivosia.dataset.session import RevisionSession
+>>> from bivosia.analysis.zones_of_disagreement import detection_parameters
 >>> import numpy as np
->>> missing = np.zeros(20, dtype=bool)
+>>> missing = np.zeros(20, dtype=int)
+>>> temporal_quality = np.array([[0.9] * 19, [0.5] * 19])
 >>> session = RevisionSession.create(
-...     {"seed": 0.6, "recover": 0.9, "gap": 0}, [(5, 9)], missing, missing, 2)
+...     detection_parameters(0.6, 0.9), [(5, 9)], missing, missing, 2,
+...     temporal_quality=temporal_quality)
 >>> session.edit(session.zones[0].id, "source", source="reverse")
 >>> session.zones[0].source
 'reverse'
@@ -25,13 +28,23 @@ from pathlib import Path
 import hashlib
 import json
 
-from bivosia.analysis.linking import boundaries, initial_draft, permutation, validate_draft
-from bivosia.analysis.revision import RevisionZone, edit_zones, new_zone, revision_fingerprint, validate_zones
-from bivosia.dataset.jsonio import annotation_filename, atomic_json
+from bivosia.analysis.linking import boundaries, initial_draft, permutation, unresolved_links, validate_draft
+from bivosia.analysis.zones_of_disagreement import RevisionZone, edit_zones, new_zone, revision_fingerprint, validate_zones
+from bivosia.config import ANALYSIS_DEFAULTS
+from bivosia.dataset.jsonio import annotation_filename, atomic_json, read_json
+
+
+def load_revision_zones(path, frame_count):
+    """Read saved zones for viewing without requiring mask-analysis arrays."""
+    payload = read_json(path)
+    if payload.get('schema') != 1:
+        raise ValueError('Not a revision/linking annotation file')
+    return validate_zones([RevisionZone(**zone) for zone in payload['zones']], frame_count)
 
 
 class RevisionSession:
-    def __init__(self, header, automatic, zones, missing_forward, missing_reverse, n, link_frames=()):
+    def __init__(self, header, automatic, zones, missing_forward, missing_reverse, n, link_frames=(), *,
+                 temporal_quality=None):
         self.frame_count, self.n = len(missing_forward), int(n)
         if len(missing_reverse) != self.frame_count or self.n < 2:
             raise ValueError("Invalid frame or mask counts")
@@ -42,6 +55,7 @@ class RevisionSession:
         self.zones = validate_zones(zones, self.frame_count)
         self.link_frames = set(link_frames)
         self.missing_forward, self.missing_reverse = missing_forward, missing_reverse
+        self.temporal_quality = temporal_quality
         self.links = {}
         self.undo_stack, self.redo_stack = [], []
         self.revision = 0
@@ -52,9 +66,17 @@ class RevisionSession:
         self._sync_links()
 
     @classmethod
-    def create(cls, header, automatic, missing_forward, missing_reverse, n):
-        return cls(header, automatic, [new_zone(a, b, missing_forward, missing_reverse) for a, b in automatic],
-                   missing_forward, missing_reverse, n)
+    def create(cls, header, automatic, missing_forward, missing_reverse, n, *, temporal_quality=None):
+        header = deepcopy(header)
+        header.setdefault('direction_method', ANALYSIS_DEFAULTS['zones_of_disagreement']['direction_method'])
+        return cls(header, automatic, [new_zone(a, b, missing_forward, missing_reverse,
+                    temporal_quality=temporal_quality, direction_method=header['direction_method'])
+                    for a, b in automatic], missing_forward, missing_reverse, n,
+                   temporal_quality=temporal_quality)
+
+    @property
+    def direction_method(self):
+        return self.header.get('direction_method', ANALYSIS_DEFAULTS['zones_of_disagreement']['direction_method'])
 
     @property
     def jobs(self):
@@ -128,7 +150,8 @@ class RevisionSession:
         before = self._state()
         old_jobs = {job.id: job for job in self.jobs}
         self.zones = edit_zones(self.zones, zone_id, operation, frame_count=self.frame_count,
-                               missing_forward=self.missing_forward, missing_reverse=self.missing_reverse, **kwargs)
+                               missing_forward=self.missing_forward, missing_reverse=self.missing_reverse,
+                               temporal_quality=self.temporal_quality, direction_method=self.direction_method, **kwargs)
         try:
             self._sync_links()
             if link_transport is not None:
@@ -169,6 +192,20 @@ class RevisionSession:
         approved["canonical_mapping"] = list(permutation(canonical_mapping, self.n))
         record.update(approved=approved, status="approved", context=job.context)
         self._finish(before, "Approve boundary")
+
+    def fill_automatic_links(self, records):
+        """Apply computed links as one undoable change, preserving manual work."""
+        eligible = {job.id: job for job in unresolved_links(self)}
+        for key, record in records.items():
+            if key not in eligible or record.get('context') != eligible[key].context:
+                raise ValueError('Boundary changed while automatic linking was running')
+            if record.get('status') != 'automatic':
+                raise ValueError('Expected an automatic link')
+            validate_draft(record['automatic'], self.n, self.frame_count)
+            permutation(record['automatic']['canonical_mapping'], self.n)
+        before = self._state()
+        self.links.update(deepcopy(records))
+        self._finish(before, "Automatic linking")
 
     def _restore(self, command, side):
         state = self._state()
@@ -221,27 +258,34 @@ class RevisionSession:
         self.dirty = False
 
     @classmethod
-    def load(cls, path, missing_forward, missing_reverse, n):
-        path = Path(path).resolve()
-        raw = path.read_bytes()
-        payload = json.loads(raw)
+    def from_record(cls, payload, missing_forward, missing_reverse, n, *, temporal_quality=None):
+        """Validate a saved annotation record against supplied recording evidence."""
         if payload.get("schema") != 1:
             raise ValueError("Not a revision/linking annotation file")
         session = cls(payload["header"], payload["auto_zones"], [RevisionZone(**z) for z in payload["zones"]],
-                      missing_forward, missing_reverse, n, payload.get("link_frames", ()))
-        session.links = payload["links"]
+                      missing_forward, missing_reverse, n, payload.get("link_frames", ()),
+                      temporal_quality=temporal_quality)
+        session.links = deepcopy(payload["links"])
         for record in session.links.values():
-            for key in ("draft", "approved"):
+            for key in ("draft", "approved", "automatic"):
                 draft = record.get(key)
                 if draft is not None:
                     validate_draft(draft, session.n, session.frame_count)
                     if "canonical_mapping" in draft:
                         permutation(draft["canonical_mapping"], session.n)
         session._sync_links()
-        session.undo_stack = payload.get("history", {}).get("undo", [])[-20:]
-        session.redo_stack = payload.get("history", {}).get("redo", [])[-20:]
+        session.undo_stack = deepcopy(payload.get("history", {}).get("undo", [])[-20:])
+        session.redo_stack = deepcopy(payload.get("history", {}).get("redo", [])[-20:])
         session.revision = payload.get("revision", 0)
         session.export = payload.get("export")
+        return session
+
+    @classmethod
+    def load(cls, path, missing_forward, missing_reverse, n, *, temporal_quality=None):
+        path = Path(path).resolve()
+        raw = path.read_bytes()
+        session = cls.from_record(json.loads(raw), missing_forward, missing_reverse, n,
+                                  temporal_quality=temporal_quality)
         session.path, session._disk_digest = path, hashlib.sha256(raw).hexdigest()
         session.dirty = False
         return session

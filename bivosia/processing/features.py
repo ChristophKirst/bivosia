@@ -22,10 +22,16 @@ import logging
 
 import numpy as np
 
-from bivosia.analysis.zone_detection import merge_intervals
 from bivosia.config import ANALYSIS_DEFAULTS, PROCESSING_DEFAULTS
-from bivosia.analysis.features import COMPONENT_DTYPE, FFT_FEATURE_NAMES, HOLE_DTYPE, feature_names, frame_features
-from bivosia.analysis.measures import mask_measures
+from bivosia.analysis.mask_features import (
+    COMPONENT_DTYPE,
+    FFT_FEATURE_NAMES,
+    HOLE_DTYPE,
+    feature_names,
+    frame_features,
+    mask_measures,
+)
+from bivosia.analysis.zones_of_disagreement import merge_intervals
 from bivosia.dataset.arrays import array_output, read_array, write_array
 from bivosia.dataset.features import create_geometry, write_geometry_block
 from bivosia.dataset.jsonio import atomic_json, read_json
@@ -39,9 +45,9 @@ from bivosia.processing.parallel import unordered_blocks, worker_count
 logger = logging.getLogger(__name__)
 _MASKS: dict[int, object] = {}
 _FEATURE_NAMES: tuple[str, ...] = feature_names()
-_INCLUDE_CONVEX_HULL = ANALYSIS_DEFAULTS['features']['include_convex_hull']
-_INCLUDE_HU_FEATURES = ANALYSIS_DEFAULTS['features']['include_hu_features']
-_INCLUDE_FFT_FEATURES = ANALYSIS_DEFAULTS['features']['include_fft_features']
+_INCLUDE_CONVEX_HULL = ANALYSIS_DEFAULTS['mask_features']['include_convex_hull']
+_INCLUDE_HU_FEATURES = ANALYSIS_DEFAULTS['mask_features']['include_hu_features']
+_INCLUDE_FFT_FEATURES = ANALYSIS_DEFAULTS['mask_features']['include_fft_features']
 
 
 def calculate_dataset_features(dataset, n_animals, *, annotations=None, progress=None,
@@ -141,9 +147,9 @@ def calculate_mask_features(
     dataset: str = "masks",
     intervals: Sequence[tuple[int, int]] | None = None,
     geometry_output: str | Path | None = None,
-    include_convex_hull: bool = ANALYSIS_DEFAULTS['features']['include_convex_hull'],
-    include_hu_features: bool = ANALYSIS_DEFAULTS['features']['include_hu_features'],
-    include_fft_features: bool = ANALYSIS_DEFAULTS['features']['include_fft_features'],
+    include_convex_hull: bool = ANALYSIS_DEFAULTS['mask_features']['include_convex_hull'],
+    include_hu_features: bool = ANALYSIS_DEFAULTS['mask_features']['include_hu_features'],
+    include_fft_features: bool = ANALYSIS_DEFAULTS['mask_features']['include_fft_features'],
     progress=None,
     cancelled=None,
 ) -> Path:
@@ -212,7 +218,7 @@ def calculate_mask_features(
                                  block_component_counts, block_components, block_hole_counts, block_holes)
             report.update(end - start)
 
-    fft = ANALYSIS_DEFAULTS['features']['fft_features']
+    fft = ANALYSIS_DEFAULTS['mask_features']['fft_features']
     metadata = {
         "schema_version": 4,
         "array": output_path.name,

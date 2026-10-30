@@ -6,7 +6,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 
 from contextlib import contextmanager
 
-from bivosia.analysis.segmentation import validate_coverage
+from bivosia.analysis.keyframes import validate_coverage
 from bivosia.dataset.mask_output import mask_outputs
 
 

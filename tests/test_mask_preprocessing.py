@@ -9,10 +9,11 @@ from tempfile import TemporaryDirectory
 import unittest
 
 import numpy as np
+import cv2
 
-from bivosia.analysis.mask_preprocessing import preprocess_mask, preprocessing_settings
-from bivosia.analysis.revision import revision_fingerprint
-from bivosia.analysis.shape_features import frame_zernike_features
+from bivosia.analysis.masks import downsample_mask, preprocess_mask, preprocessing_settings
+from bivosia.analysis.zones_of_disagreement import revision_fingerprint
+from bivosia.analysis.mask_features import frame_zernike_features, zernike_features
 from bivosia.config import ANALYSIS_DEFAULTS
 from bivosia.dataset.containers import container_output
 from bivosia.dataset.jsonio import atomic_json
@@ -25,6 +26,28 @@ from bivosia.processing.shape_features import extract_zernike
 
 
 class MaskPreprocessingTests(unittest.TestCase):
+    def test_downsampling_precedes_preprocessing_and_uses_reduced_pixels(self):
+        mask = np.zeros((40, 50), dtype=bool)
+        mask[2:12, 2:12] = mask[2:8, 14:20] = True
+        original = mask.copy()
+        resized = cv2.resize(mask.astype(np.uint8), (25, 20), interpolation=cv2.INTER_NEAREST_EXACT) != 0
+        np.testing.assert_array_equal(downsample_mask(mask, 2), resized)
+        parameters = preprocessing_settings(True, main_body_area=20,
+                                             filter_by_distance=False, apply_opening=False)
+        cleaned = preprocess_mask(resized, **parameters)
+        self.assertEqual(int(cleaned.sum()), 25)
+        labels = mask.astype(np.uint16) * 7
+        identities, features, excluded = frame_zernike_features(labels, 5, 2, downsample_factor=2,
+                                                               preprocessing=parameters)
+        self.assertEqual(excluded, [])
+        self.assertEqual(identities.tolist(), [7])
+        np.testing.assert_allclose(features[0], zernike_features(cleaned, 5, 2))
+        np.testing.assert_array_equal(mask, original)
+        np.testing.assert_array_equal(labels, original.astype(np.uint16) * 7)
+        for factor in (0, -1, 1.5, True):
+            with self.subTest(factor=factor), self.assertRaises(ValueError):
+                downsample_mask(mask, factor)
+
     def test_fragment_thresholds_and_opening_preserve_source(self):
         mask = np.zeros((40, 50), dtype=bool)
         mask[2:12, 2:12] = mask[2:8, 14:20] = mask[30, 40] = True
@@ -99,7 +122,8 @@ class MaskPreprocessingTests(unittest.TestCase):
             values, frames, identities, metadata = read_zernike(cleaned, {'preprocessing': parameters})
             self.assertEqual(frames.tolist(), [0, 0, 2, 2, 3, 3])
             self.assertEqual(identities.tolist(), [1, 4, 1, 4, 1, 4])
-            expected_ids, expected = frame_zernike_features(labels[0], 70, 2, preprocessing=parameters)
+            expected_ids, expected, excluded = frame_zernike_features(labels[0], 70, 2, preprocessing=parameters)
+            self.assertEqual(excluded, [])
             np.testing.assert_allclose(values[:2], expected)
             np.testing.assert_array_equal(expected_ids, [1, 4])
             self.assertEqual(metadata['image_shape'], [48, 64])
@@ -109,7 +133,8 @@ class MaskPreprocessingTests(unittest.TestCase):
             for z_score in (False, True):
                 self.assertNotEqual(embedding_path(dataset, z_score=z_score),
                                     embedding_path(dataset, z_score=z_score, preprocess_masks=True))
-            settings = dict(ANALYSIS_DEFAULTS['shape_features'], **parameters, radius=70, degree=2)
+            settings = dict(ANALYSIS_DEFAULTS['mask_features']['zernike'], **ANALYSIS_DEFAULTS['embedding'],
+                            **parameters, radius=70, degree=2)
             shape_analysis_inputs(dataset, settings)
             settings['preprocess_masks'] = True
             shape_analysis_inputs(dataset, settings)

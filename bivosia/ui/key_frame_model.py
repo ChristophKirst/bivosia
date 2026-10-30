@@ -3,9 +3,12 @@
 Examples
 --------
 >>> from PySide6.QtWidgets import QApplication
+>>> from bivosia.dataset.layout import Dataset
 >>> from bivosia.ui.key_frame_model import KeyFrameModelSelector
+>>> from bivosia.ui.processing_target import ProcessingTarget
 >>> app = QApplication.instance() or QApplication([])  # doctest: +SKIP
->>> selector = KeyFrameModelSelector(model="sam2")  # doctest: +SKIP
+>>> target = ProcessingTarget(Dataset('/path/to/dataset'), require_dataset=False)  # doctest: +SKIP
+>>> selector = KeyFrameModelSelector(target, model="sam2")  # doctest: +SKIP
 >>> selector.show()  # doctest: +SKIP
 >>> app.exec()  # doctest: +SKIP
 """
@@ -25,7 +28,6 @@ from bivosia.processing.remote_session import RemoteSession
 from bivosia.segmentation.image import model_availability
 from bivosia.ui.icons import action_icon
 from bivosia.ui.model_install_dialog import ModelInstallDialog
-from bivosia.ui.remote_target import RemoteTarget
 from bivosia.ui.task import Task
 
 
@@ -40,8 +42,9 @@ class ModelCombo(QComboBox):
 class KeyFrameModelSelector(QWidget):
     changed = Signal()
 
-    def __init__(self, model=None, checkpoint=None, device="auto", parameters=None):
+    def __init__(self, target, model=None, checkpoint=None, device="auto", parameters=None):
         super().__init__()
+        self.target = target
         model = model or next(iter(KEY_FRAME_BACKENDS))
         self.device = device
         self.overrides = {model: parameters or {}}
@@ -55,12 +58,6 @@ class KeyFrameModelSelector(QWidget):
         self.availability = {}
         form = QFormLayout(self)
         form.setContentsMargins(0, 0, 0, 0)
-        self.target = QComboBox()
-        self.target.addItems(['Local', 'SSH'])
-        form.addRow('Run on', self.target)
-        self.remote_panel = RemoteTarget(include_dataset=False)
-        self.remote_panel.hide()
-        form.addRow(self.remote_panel)
         self.model = ModelCombo()
         for name in self.checkpoints:
             self.model.addItem(KEY_FRAME_BACKENDS[name]['label'], name)
@@ -82,14 +79,13 @@ class KeyFrameModelSelector(QWidget):
         self.model.currentIndexChanged.connect(self._selected)
         self.model.opening.connect(self.refresh)
         self.checkpoint.editingFinished.connect(self._checkpoint_changed)
-        self.target.currentIndexChanged.connect(self._target_changed)
-        self.remote_panel.changed.connect(self._target_changed)
+        self.target.changed.connect(self._target_changed)
         QApplication.instance().aboutToQuit.connect(self.shutdown)
-        self.refresh()
+        self._target_changed()
 
     @property
     def remote(self):
-        return self.remote_panel.remote(require_dataset=False) if self.target.currentText() == 'SSH' else None
+        return self.target.remote()
 
     def set_busy(self, busy):
         self._busy = busy
@@ -102,10 +98,9 @@ class KeyFrameModelSelector(QWidget):
             self._target_pending = True
             return
         self._target_pending = False
-        ssh = self.target.currentText() == 'SSH'
-        self.remote_panel.setVisible(ssh)
+        ssh = self.target.target.currentText() == 'SSH'
         self.browse.setEnabled(not ssh)
-        profile = self.remote_panel.profile if ssh else None
+        profile = self.target.remote_panel.profile if ssh else None
         key = tuple(profile[field] for field in ('host', 'python', 'code')) if profile else ('SSH',) if ssh else None
         if key not in self._checkpoint_sets:
             self._checkpoint_sets[key] = {name: profile['checkpoints'].get(name, '') if profile else ''
@@ -141,9 +136,9 @@ class KeyFrameModelSelector(QWidget):
         task = Task(lambda: check_models(session, checkpoints, self.device, self.overrides), self)
         generation = self._generation
         self._probe = task, session
-        task.ready.connect(lambda result: self._checked(generation, result))
-        task.failed.connect(lambda error: self._checked(generation, {name: (None, error) for name in checkpoints}))
-        task.finished.connect(lambda: self._check_finished(generation))
+        task.connect_callbacks(ready=lambda result: self._checked(generation, result),
+            failed=lambda error: self._checked(generation, {name: (None, error) for name in checkpoints}),
+            finished=lambda: self._check_finished(generation))
         task.start()
 
     def _checked(self, generation, availability):
@@ -152,7 +147,6 @@ class KeyFrameModelSelector(QWidget):
 
     def _check_finished(self, generation):
         if generation == self._generation and self._probe is not None:
-            self._probe[0].deleteLater()
             self._probe = None
 
     def shutdown(self):
@@ -163,7 +157,6 @@ class KeyFrameModelSelector(QWidget):
             task.requestInterruption()
             session.close()
             task.wait()
-            task.deleteLater()
             self._probe = None
 
     def _apply_availability(self, availability):
@@ -191,7 +184,7 @@ class KeyFrameModelSelector(QWidget):
 
     def _checkpoint_changed(self):
         path = self.checkpoint.text().strip()
-        self.checkpoints[self.model.currentData()] = (Path(path).expanduser() if self.target.currentText() == 'Local'
+        self.checkpoints[self.model.currentData()] = (Path(path).expanduser() if self.target.target.currentText() == 'Local'
                                                      else path)
         self.refresh()
 

@@ -56,10 +56,10 @@ def check_output(path):
 
 @contextmanager
 def mask_outputs(paths, shape, *, dtype=np.uint8, metadata=None):
-    """Publish a group of closed mask files, restoring partials on publication failure.
+    """Publish a group of closed mask files, discarding the group's output on failure.
 
     Destinations are exclusive: existing labels, validity files and unfinished
-    outputs are preserved. NPY output is memory-mapped while writing. NPZ output
+    outputs are protected. NPY output is memory-mapped while writing. NPZ output
     uses a disk array during calculation and compresses it after the caller exits.
     Every validity vector starts false; callers mark the frames they produce.
     """
@@ -92,10 +92,9 @@ def mask_outputs(paths, shape, *, dtype=np.uint8, metadata=None):
             os.replace(partial, path)
     except BaseException:
         for partial, path in published:
-            if partial.exists():
-                path.unlink()
-            else:
-                os.replace(path, partial)
+            path.unlink(missing_ok=True)
+        for partial, path in pending:
+            partial.unlink(missing_ok=True)
         raise
     finally:
         for lock in locks:

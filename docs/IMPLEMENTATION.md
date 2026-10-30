@@ -5,8 +5,9 @@ processing and dataset writers are separated. Viewer/editor imports and archived
 callers use the new modules directly; superseded modules have been removed.
 The key-frame editor and first VOS interface were added on 2026-10-05.
 VOS supports local and SSH background jobs, script export and a progress console.
-Real Cutie inference awaits its checkpoint; automatic resolution and
-external-tool correction remain future work.
+Real Cutie inference awaits its checkpoint; external-tool correction remains
+future work. Automatic direction proposals support the Methods rule and two
+simpler missing-mask rules.
 
 ## Responsibilities
 
@@ -24,15 +25,15 @@ Implemented layout:
 ```text
 bivosia/
   analysis/
-    masks.py          IoU, presence, assignments, margins, switches, relabeling
-    zone_detection.py seeds, recovery expansion and zone merging
-    revision.py       interval edits, validation and default mask directions
+    masks.py          validation, relabeling, cleanup and preprocessing
+    mask_features.py  geometry, contour and Zernike descriptors, temporal features
+                      and frame summaries
+    quality.py        IoU, assignments, margins, switches and direction comparisons
+    zones_of_disagreement.py evidence, seeds, expansion, merging,
+                             zone summaries, interval edits and mask directions
     linking.py        boundary matches, identity propagation and validation
-    features.py       mask geometry and temporal features
-    measures.py       feature aggregation and forward/reverse comparisons
   processing/
     quantify.py       basic mask quantification over a recording
-    zones.py          zone detection over prepared measures
     revision.py       loaded-recording integration for editing/linking
     export.py         validated mask output generation
     features.py       detailed feature output generation
@@ -45,10 +46,26 @@ bivosia/
   config.py           dataset hierarchy, file names, formats and shared defaults
 ```
 
-Use `revision.py` instead of `zone_revision.py`, and `linking.py` instead of
-`zone_linking.py`. Keep these separate rather than combining everything in
-`zones.py`: interval editing and identity linking have distinct inputs and
-rules. Linking also handles independent frame transitions inside a zone.
+`analysis/zones_of_disagreement.py` owns zone detection, shared missing-mask
+event classification, zone summaries and revision interval rules. UI adapters
+only turn those results into display records. `processing/revision.py` connects
+the analysis to a loaded recording. Identity linking remains in
+`analysis/linking.py`, including independent frame transitions inside a zone.
+
+The default detector combines missing-mask, assignment-switch and low-quality
+seeds, expands to recovery, then merges intervals using an inclusive frame gap.
+Missing masks and switches remain explicit flags; the displayed quality is the
+minimum finite frame quality, without replacing it by negative infinity.
+The `direction_method` parameter selects `missing_masks`, `missing_mask_counts`
+or `temporal_quality` (default), as listed in `config.AUTO_DIRECTION_METHODS`.
+The first preserves the conservative complete-direction rule. The latter two
+reject a zone if either direction is missing more than one mask in any frame,
+then choose fewer missing masks; equal nonzero totals are invalid. Without
+missing masks, the count-only rule chooses forward and the default Methods rule
+chooses the higher minimum temporal assignment quality; equal scores or no
+finite quality are invalid. The editor saves the method in the annotation
+header. Loaded zone records retain their saved choices; automatic interval
+edits use the session's method and manually chosen directions are preserved.
 
 Pixel-label replacement lives in `analysis/masks.py`, identity validation and
 preferred-mask selection in `analysis/linking.py`, and output streaming in
@@ -60,7 +77,7 @@ loaded recording.
 
 Keypoint displacement is calculated independently of mask validity and assignments,
 using the alignment's selected nodes in original source-image pixels.
-`analysis/keypoint_displacement.py`
+`analysis/keypoints.py`
 averages Euclidean displacement over nodes with finite xy in both consecutive
 frames for each track; no common nodes gives positive infinity. The frame-pair
 score is the maximum across tracks. `processing/keypoints.py` computes blocks
@@ -83,21 +100,28 @@ behavior reuse the existing panels. No mask or keypoint swap results change.
 
 `config.py` separates `DATASET_LAYOUT` (folders and file names), `DATA_FORMATS`
 (data-category readers, writers and suffixes), `KEY_FRAME_BACKENDS` (SAM2/SAM3)
-and `VOS_BACKENDS` (Cutie). `ANALYSIS_DEFAULTS['masks']['count_dtype']`
+and `VOS_BACKENDS` (Cutie). `ANALYSIS_DEFAULTS['quality']['count_dtype']`
 sets the pixel-count dtype shared by overlap calculation and result loading.
-`ANALYSIS_DEFAULTS['zone_detection']['theta_quality']` supplies the `0.60` seed default to the detector,
+`ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_quality']` supplies the `0.60` seed default to the detector,
 processing, linking and viewers; explicit thresholds and saved annotation settings
 retain their supplied values.
 Both defaults dictionaries use module names as their top-level keys.
-`ANALYSIS_DEFAULTS` groups detection thresholds in `zone_detection`, assignment
-fallback in `alignment`, dilation in `point_masks`, counts and temporal intersections
-in `masks`, and optional Hu, convex-hull and FFT features in `features`.
+`ANALYSIS_DEFAULTS` groups detection thresholds in `zones_of_disagreement`, assignment
+fallback, tie tolerances and dilation in `alignment`, counts and temporal intersections
+in `quality`, and optional Hu, convex-hull and FFT features in `mask_features`.
+Zernike settings live in `mask_features['zernike']`; optional z-scoring belongs to `embedding`.
+`analysis/masks.py` contains validation and mask manipulation. Cleanup and preprocessing defaults live under
+`ANALYSIS_DEFAULTS['masks']['cleanup']` and `ANALYSIS_DEFAULTS['masks']['preprocessing']`.
+`analysis/mask_features.py` groups geometry and presence, contour and temporal features,
+Zernike descriptors, frame summaries and feature validation. `analysis/quality.py`
+groups overlaps, assignment quality, temporal comparisons and recording comparisons.
+`analysis/linking.py` uses these comparisons to establish identities across segments.
 `include_hu_features=False` skips both signed-log Hu values and Hu-based temporal
 shape comparisons; `max_shape_change_i1` is omitted when its source is absent.
 Raw and derived output column names record the selected features.
 `include_convex_hull=True` and `include_fft_features=False` independently control
 convex-hull excess and spectral calculations, including their derived measures.
-Spectral sampling and frequency parameters live under `features['fft_features']`
+Spectral sampling and frequency parameters live under `mask_features['fft_features']`
 regardless of whether calculation is enabled.
 `PROCESSING_DEFAULTS` groups batch/block sizes and worker counts under `quantify`,
 `features`, `alignment` and `keypoints`, and timing intervals under `jobs`.
@@ -156,14 +180,13 @@ inside the image on valid alignment frames. Invalid frames are not evaluated;
 their false entries must be interpreted together with `valid`. Node/track names,
 image dimensions, coordinate rounding, dilation and selected mask source are
 stored with the result. Scores can be recalculated from these arrays using
-`analysis.point_masks.point_overlap_scores` after choosing nodes, without
+`analysis.alignment.point_overlap_scores` after choosing nodes, without
 reading the masks again. Changing dilation or coordinate rounding requires
 recomputing containment from the source masks and points.
 
-`analysis/point_masks.py` rounds supplied mask-pixel coordinates to the nearest integer
+`analysis/alignment.py` rounds supplied mask-pixel coordinates to the nearest integer
 (half-integers to even), then scores independently dilated masks by C²/K:
-C contained points out of K finite in-bounds points. `analysis/alignment.py`
-maximizes the total C²/K score;
+C contained points out of K finite in-bounds points. It maximizes the total C²/K score;
 zero-overlap pairs remain unmatched.
 Equal optima leave ambiguous pairs unmatched. Optional previous-assignment
 fallback retains compatible pairs, propagates initial ties backward from the
@@ -396,8 +419,8 @@ Automatic results do not change saved hand annotations or approval records.
 | Step | Responsibility | Scope |
 |---|---|---|
 | 1. Mask generation | Key-frame editing and video propagation | `segmentation` backends, executed through `processing/segmentation.py` |
-| 2. Mask quantification | Integer intersections and per-direction areas in one mask pass; derive IoU, Hungarian assignments, quality and switches from those counts | `analysis/masks.py`, executed through `processing/quantify.py` |
-| 3. Detection and automatic resolution | Detect zones from prepared measures, then resolve when rules are available | Preserve current detection; automatic-resolution rules are pending |
+| 2. Mask quantification | Integer intersections and per-direction areas in one mask pass; derive IoU, Hungarian assignments, quality and switches from those counts | `analysis/mask_features.py` and `analysis/quality.py`, executed through `processing/quantify.py` |
+| 3. Detection and automatic direction | Detect zones, summarize flags and choose mask direction using the selected method | `analysis/zones_of_disagreement.py` |
 | 4. Zone editing | Revise intervals, select masks and approve links | Existing UI calls analysis algorithms; session state/history stays in `dataset` |
 | 5. Validated outputs | Validate links and generate relabeled masks and optional detailed features | Shared export/feature processing functions |
 | 6. Correct external outputs | SLEAP or other tool outputs | Later; no implementation now |
@@ -417,10 +440,17 @@ With `temporal_intersections=True` (CLI: `--temporal-intersections`), the same p
 `(2, frames-1, animals, animals)`. All three count files use uint32. Entry `[d, t, i, j]`
 is the intersection between raw ID `i+1` at `t` and ID `j+1` at `t+1` within direction
 `d` (forward/reverse). Both directions use chronological frame order.
-Each processing block reads one preceding frame to
-include its first transition. These matrices do not yet alter zone detection.
-The option defaults to False: no temporal matrices are computed or written,
-and no preceding frame is read. An existing temporal output is left unchanged.
+Each processing block reads one preceding frame to include its first transition.
+The compact `mask_temporal_quality.npy` array, shape `(2, frames-1)`, is always
+written: temporal IoU matrices use the same Hungarian assignments and signed
+row/column margins as the forward/reverse quality calculation. Entry `[d,t]`
+compares frames `t` and `t+1`; zone quality takes the minimum finite value for
+transitions starting inside the zone. The last recording frame has no successor.
+The `temporal_intersections` option defaults to False and controls only retention
+of the full temporal count matrices. Zone detection itself is unchanged.
+The loader retains integer missing counts and loads temporal quality when
+available. Selecting a temporal proposal without this output requests a new
+mask-analysis run instead of substituting the conservative rule.
 
 Unions and normalized IoU are derived from the count arrays, not persisted:
 `union = A + B - I`, `IoU = I / union`. Counts are promoted to int64 before
@@ -428,7 +458,7 @@ arithmetic. Frames exceeding uint32 pixel capacity are rejected before processin
 Either area being zero produces NaN IoU.
 Assignments and quality use the same formulas as before and run over count-array
 blocks without reading masks again. `dataset.arrays.MaskOverlaps` owns the
-memory maps and calls the shared conversion in `analysis/masks.py`.
+memory maps and calls the shared conversion in `analysis/quality.py`.
 Processing and GUI entry points share a `Dataset` instance; `Recording(dataset)`
 adds loaded evidence and video resources. Historical normalized-array readers
 and processing entry points remain under `_previous`.
@@ -437,14 +467,14 @@ and processing entry points remain under `_previous`.
 
 | Current code | Destination |
 |---|---|
-| `calculate_iou_matrix.frame_iou_matrix` | `analysis/masks.py` |
-| Assignments, missing-mask measures, margins and switch calculations in `detection.py` | `analysis/masks.py`; retain zone detection in `analysis/zone_detection.py` |
+| `calculate_iou_matrix.frame_iou_matrix` | `analysis/quality.py` |
+| Assignments, missing-mask measures, margins and switch calculations in `detection.py` | Comparison calculations in `analysis/quality.py`; zone detection in `analysis/zones_of_disagreement.py` |
 | Block loops and file processing in the IoU, match and quality calculators | `processing/quantify.py`, using dataset I/O |
-| `zone_revision.py` | `analysis/revision.py` |
+| `zone_revision.py` | `analysis/zones_of_disagreement.py` |
 | `zone_linking.py` and export identity validation | `analysis/linking.py` |
 | `global_relabel.py` | Pixel mapping in `analysis/masks.py`; identity/source rules in `analysis/linking.py`; streaming in `processing/export.py` |
 | `revision_data.py` | Numerical linking rules in analysis; loaded-recording orchestration/caches in `processing/revision.py` |
-| Feature and measure calculators | Numerical functions in `analysis/features.py` and `analysis/measures.py`; recording-scale execution in `processing/features.py` |
+| Feature and measure calculators | Geometry, descriptors and frame summaries in `analysis/mask_features.py`; forward/reverse comparisons in `analysis/quality.py`; recording-scale execution in `processing/features.py` and `processing/shape_features.py` |
 | `parallel.py` | Worker utilities in `processing/parallel.py`; progress reporting in `processing/log.py` |
 | Embedded `main()` functions | Thin entry points in `run` where needed |
 
@@ -535,8 +565,8 @@ are supplied when the caller knows the dataset root.
 Retain Python 3.10, concise module examples and the agreed module headers.
 Preserve datasets and original annotations. Keep historical formats, converters,
 old IoU/alternative-IoU support and comparison GUIs exclusively in `_previous`.
-Do not introduce a pipeline framework, automatic-resolution rules, VOS code,
-external-tool correction or a new GUI console during this initial refactor.
+Keep changes focused on the requested workflow; external-tool correction and
+a pipeline framework are outside the current scope.
 
 ## Key-frame editor
 
@@ -548,7 +578,7 @@ legend and splitters. The existing player and identity palettes now live in
 `ui/mask_canvas.py` handles image interaction and brush/selection overlays;
 `ui/mask_tools.py` supplies the exclusive mode buttons.
 
-`analysis/key_frames.py` owns frame proposals, crop/label validation, prompt conversion
+`analysis/keyframes.py` owns frame proposals, crop/label validation, prompt conversion
 and mask editing. Initial proposals are evenly spaced and include both crop
 endpoints. When labels already exist, proposals are spaced between fixed labels
 and endpoints. Only unlabeled interior frames move. Changing endpoints changes
@@ -579,7 +609,7 @@ annotations:
 - Save writes the current frame's label; unsaved edits prompt on navigation or
   close. Mask Undo/Redo is in memory, limited to 20 operations per editing frame.
 - Prediction returns the highest finite-score candidate for each prompted
-  animal. `analysis/key_frames.py` selects candidates and composes the preview.
+  animal. `analysis/keyframes.py` selects candidates and composes the preview.
   Overlapping proposals favor the higher SAM score, then the smaller ID on
   ties. Animals without predictions retain their current masks.
 - The default SAM action predicts all prompted animals; Predict selected runs
@@ -664,7 +694,7 @@ The first VOS interface is implemented. `segmentation/image.py` and
 `segmentation/vos.py` define independent image and sequence interfaces;
 `segmentation/backends` contains SAM and Cutie adapters. VOS reference selection
 and model state stay in segmentation; frame/label/coverage validation is in
-`analysis/segmentation.py`. `processing/segmentation.py` executes interval runs,
+`analysis/keyframes.py`. `processing/segmentation.py` executes interval runs,
 using the dataset video reader and transactional mask writer. Source RGB frames
 are decoded directly; reverse traversal uses bounded forward-decoded blocks.
 No JPEGs, reversed clips or intermediate PNG masks are generated.
@@ -678,11 +708,11 @@ preload permanent references; transient sensory state is reset before propagatio
 Reference IDs must represent the same animals across the selected key frames.
 
 `processing/jobs.py` starts detached Python workers; `processing/remote.py` uses
-OpenSSH to invoke that same worker. There is no service manager, cluster adapter,
-permanent SAM service or web server. Job records/logs are owned by `dataset/jobs.py`.
+OpenSSH to invoke that same worker. Remote Linux workers use a systemd user service when available to survive SSH logout.
+There is no cluster adapter, permanent SAM service or web server. Job records/logs are owned by `dataset/jobs.py`.
 Saved remote installations use application preferences through
 `ui/remote_settings.py`. The shared `RemoteTarget` selector remembers each local
-dataset's remote directories. Registration checks core imports and the protocol
+dataset's selected installation; remote directories belong to the dataset description. Registration checks core imports and the protocol
 through `processing/remote.py` without accessing a dataset or loading model weights.
 Exported scripts call the same runner, normally or with --background. SSH inputs
 are structured JSON; credentials stay in SSH. Submission IDs prevent duplicate
@@ -690,10 +720,18 @@ launch on repeated requests. Workers read key-frame inputs into memory on startu
 Status is written atomically with a heartbeat, and cancellation is cooperative.
 Reconnection does not restore interrupted model state. Output locks prevent
 concurrent writers, existing outputs are refused, and incomplete files remain
-separate. Fetching is explicit and checksum-verified.
+separate. Dataset transfers belong to the dataset viewer. Consolidation compares copies,
+collects conflict choices, verifies published bytes and writes a self-contained destination description.
+
+`dataset/remote_reader.py` owns one persistent SSH session for a mask pair. The server uses
+`open_masks()` and its registered HDF5/NPY/NPZ adapters. Frames are transferred on demand;
+recording plots use temporary snapshots of the much smaller numerical analysis products.
+Workflow checks include registered remote locations, and analysis windows submit jobs to
+the selected installation. The shared console polls logs asynchronously.
 
 Masks retain source indices and an explicit validity array outside the crop.
 Full-recording analysis currently rejects cropped output. Focused checks cover
 frame order, key frames, references, crop validity, cancellation, output protection,
 background failure reporting, script execution, protocol/fetch and off-screen UI.
-Real Cutie inference, actual remote execution and non-Linux hosts remain unverified.
+Remote mask reads and a small remote analysis job were verified on the registered Linux workstation.
+Non-Linux hosts remain unverified.

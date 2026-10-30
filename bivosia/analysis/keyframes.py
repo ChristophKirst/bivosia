@@ -1,9 +1,9 @@
-"""Key-frame selection, prompt validation and integer-mask editing.
+"""Key-frame selection, mask editing and segmentation-output validation.
 
 Examples
 --------
 >>> import numpy as np
->>> from bivosia.analysis.key_frames import add_frame, move_frame, paint_mask, propose_frames
+>>> from bivosia.analysis.keyframes import add_frame, move_frame, paint_mask, propose_frames
 >>> propose_frames(0, 100, 5)
 [0, 25, 50, 75, 100]
 >>> propose_frames(0, 100, 4, locked=(40,))
@@ -17,6 +17,11 @@ Examples
 >>> mask = np.zeros((5, 5), dtype=np.uint8)
 >>> paint_mask(mask, (2, 2), (2, 2), 1, 2)[2, 2].item()
 2
+>>> from bivosia.analysis.keyframes import key_frame_intervals, output_shape
+>>> key_frame_intervals([0, 5, 10], [0, 10])
+[(0, 5), (5, 10)]
+>>> output_shape((100, 200), 0.5)
+(50, 100)
 """
 
 __project__ = 'BiVOSIA'
@@ -31,6 +36,13 @@ def validate_crop(start, end, frame_count):
     """Validate inclusive source-frame bounds for bidirectional segmentation."""
     if not 0 <= start < end < frame_count:
         raise ValueError("Crop must contain at least two frames within the video")
+
+
+def validate_coverage(valid, crop):
+    valid = np.asarray(valid, dtype=bool)
+    first, last = crop
+    if not valid[first:last + 1].all() or valid[:first].any() or valid[last + 1:].any():
+        raise ValueError('Generated masks do not cover exactly the selected crop')
 
 
 def fixed_frames(crop, labeled):
@@ -84,6 +96,13 @@ def cropped_frames(frames, crop, locked):
     return sorted({*fixed_frames(crop, locked), *(f for f in frames if crop[0] <= f <= crop[1])})
 
 
+def key_frame_intervals(frames, crop):
+    frames = sorted(set(f for f in frames if crop[0] <= f <= crop[1]))
+    if not frames or frames[0] != crop[0] or frames[-1] != crop[1]:
+        raise ValueError('Label and save both crop endpoints before running VOS')
+    return list(zip(frames[:-1], frames[1:])) or [(frames[0], frames[0])]
+
+
 def validate_mask(mask, shape, animals):
     """Check image geometry and animal IDs; return an independent uint8 mask."""
     mask = np.asarray(mask)
@@ -94,6 +113,19 @@ def validate_mask(mask, shape, animals):
     if mask.size and (mask.min() < 0 or mask.max() > animals):
         raise ValueError("Mask contains IDs outside the animal range")
     return mask.astype(np.uint8, copy=True)
+
+
+def output_shape(shape, scale):
+    if not np.isfinite(scale) or not 0 < scale <= 1:
+        raise ValueError('Output scale must be greater than zero and at most one')
+    return tuple(max(1, round(size * scale)) for size in shape)
+
+
+def output_mask(mask, source_shape, shape, animals):
+    """Validate IDs and resize integer labels using nearest-neighbor sampling."""
+    mask = validate_mask(mask, source_shape, animals)
+    return mask if tuple(shape) == tuple(source_shape) else cv2.resize(
+        mask, (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST_EXACT)
 
 
 def validate_prompts(prompts, shape, animals):
@@ -118,7 +150,7 @@ def point_prompts(prompts, animal):
 def prompted_animals(prompts, animal=None):
     """Return animal IDs with positive prompts, excluding background.
 
-    >>> from bivosia.analysis.key_frames import prompted_animals
+    >>> from bivosia.analysis.keyframes import prompted_animals
     >>> prompted_animals([[1, 2, 3], [4, 5, 0], [6, 7, 1]])
     [1, 3]
     """
@@ -136,7 +168,7 @@ def best_mask(masks, scores):
     """Select the candidate with the highest finite prediction score.
 
     >>> import numpy as np
-    >>> from bivosia.analysis.key_frames import best_mask
+    >>> from bivosia.analysis.keyframes import best_mask
     >>> best_mask(np.array([[[False]], [[True]]]), [0.2, 0.9])[0].item()
     True
     """
@@ -154,7 +186,7 @@ def combine_masks(mask, predictions):
     score; equal scores favor the smaller animal ID.
 
     >>> import numpy as np
-    >>> from bivosia.analysis.key_frames import combine_masks
+    >>> from bivosia.analysis.keyframes import combine_masks
     >>> base = np.array([[1, 0, 3]], dtype=np.uint8)
     >>> proposals = {1: (np.array([[0, 1, 1]]), 0.7),
     ...              2: (np.array([[1, 1, 0]]), 0.9)}
@@ -175,7 +207,7 @@ def accept_masks(mask, preview, animals):
     """Apply only selected animal regions exactly as shown in a mask preview.
 
     >>> import numpy as np
-    >>> from bivosia.analysis.key_frames import accept_masks
+    >>> from bivosia.analysis.keyframes import accept_masks
     >>> accept_masks(np.array([[1, 2, 0]], dtype=np.uint8),
     ...              np.array([[0, 1, 2]], dtype=np.uint8), [1]).tolist()
     [[0, 1, 0]]
@@ -195,7 +227,7 @@ def edited_predictions(predictions, before, after):
     Proposal masks become disjoint so recomposing them preserves brush edits.
 
     >>> import numpy as np
-    >>> from bivosia.analysis.key_frames import edited_predictions
+    >>> from bivosia.analysis.keyframes import edited_predictions
     >>> before = np.array([[1, 2]], dtype=np.uint8)
     >>> after = np.array([[1, 0]], dtype=np.uint8)
     >>> result = edited_predictions({1: (before == 1, .8)}, before, after)

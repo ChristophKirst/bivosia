@@ -79,7 +79,8 @@ class Remote:
         except ValueError:
             raise RuntimeError('Remote Python did not return a job response: ' + result.stdout[-1000:]) from None
         if 'error' in response:
-            raise RuntimeError(response['error'])
+            error_type = FileNotFoundError if response.get('error_type') == 'FileNotFoundError' else RuntimeError
+            raise error_type(response['error'])
         return response
 
     def install_model(self, model, progress=None):
@@ -93,12 +94,7 @@ class Remote:
 
     def check_installation(self):
         """Check an installation without requiring a dataset or model weights."""
-        try:
-            response = self.call('installation')
-        except RuntimeError as error:
-            if 'Unknown remote action: installation' in str(error):
-                raise RuntimeError('Update the remote bivosia folder to the current code before registering it.') from None
-            raise
+        response = self.call('installation')
         if not isinstance(response, dict):
             raise ValueError('Remote BiVOSIA returned invalid installation details')
         if response.get('protocol') != REMOTE_PROTOCOL_VERSION:
@@ -188,9 +184,66 @@ def dispatch(request):
             raise RuntimeError(reason)
         return {'device': selected}
     dataset = Dataset(remote_path(request['dataset']))
+    if action == 'preflight':
+        from bivosia.processing.preflight import check_inputs
+        if request.get('annotation'):
+            dataset.settings['annotation'] = request['annotation']
+        return check_inputs(dataset, request['operation'], request['settings'])
+    if action == 'read_json':
+        from bivosia.dataset.file_operations import checked_file
+        from bivosia.dataset.jsonio import read_json
+        path, state = checked_file(dataset, request['path'], request['expected'])
+        value = read_json(path)
+        checked_file(dataset, path, state)
+        return {'value': value}
+    if action == 'location':
+        return {'path': str(dataset.directory)}
+    if action == 'file_signatures':
+        from bivosia.dataset.consolidation import file_signatures
+        from bivosia.processing.jobs import require_idle
+        require_idle(dataset)
+        return file_signatures(dataset, request['files'])
+    if action == 'analysis_inputs':
+        if not dataset.description.is_file():
+            raise FileNotFoundError('Dataset description is missing')
+        if request.get('annotation'):
+            dataset.settings['annotation'] = request['annotation']
+        from bivosia.dataset.analysis_inputs import processing_inputs
+        from bivosia.dataset.array_transport import pack_arrays
+        result = processing_inputs(dataset, request['operation'], request['settings'])
+        if result.get('coordinates') is not None:
+            result['coordinates'] = pack_arrays(coordinates=result['coordinates'],
+                                                frames=result.pop('frames'), identities=result.pop('identities'))
+        return result
+    if action == 'keypoint_names':
+        from bivosia.dataset.keypoints import open_keypoints
+        return {'names': list(open_keypoints(dataset).node_names)}
+    if action == 'outputs':
+        from bivosia.dataset.workflow import inspect_outputs
+        result = inspect_outputs(dataset)
+        for group in result.values():
+            for entry in group.values():
+                entry['path'] = str(entry['path']) if entry['path'] else None
+                entry['metadata'] = None
+        return result
+    if action == 'workflow':
+        from bivosia.dataset.workflow import workflow_snapshot
+        return workflow_snapshot(dataset, annotation_record=request.get('annotation_record'),
+                                  feature_settings=request.get('feature_settings'))
+    if action == 'console':
+        names = list_jobs(dataset, operation=request.get('operation'))
+        selected = request.get('job_id')
+        job_id = selected if selected in names else next(iter(names), None)
+        return {'jobs': [(name, Job(dataset, name).settings['operation']) for name in names],
+                'result': inspect(Job(dataset, job_id), request.get('offset', 0) if selected == job_id else 0)
+                if job_id else None}
     if action == 'inventory':
         from bivosia.dataset.inventory import inventory_records
         return {'files': inventory_records(dataset)}
+    if action in ('check_contents', 'delete_contents', 'create_folders', 'completed_job_folders'):
+        from bivosia.processing.folder_operations import contents_on_host
+        return contents_on_host(dataset, action, **{key: request[key] for key in
+                                ('files', 'folders', 'root', 'relatives') if key in request})
     if action == 'delete_file':
         from bivosia.dataset.file_operations import delete_file
         from bivosia.processing.jobs import require_idle
@@ -200,7 +253,7 @@ def dispatch(request):
     if action in ('move_file', 'copy_file'):
         from bivosia.processing.file_operations import transfer_on_host
         transfer_on_host(dataset, request['path'], request['expected'], request['root'], request['relative'],
-                         move=action == 'move_file')
+                         move=action == 'move_file', replace_expected=request.get('replace_expected'))
         return {'moved' if action == 'move_file' else 'copied': request['relative']}
     if action == 'check':
         from bivosia.processing.segmentation import check
@@ -210,6 +263,15 @@ def dispatch(request):
         job = Job(dataset, request['job_id'])
         if job.directory.exists():
             return inspect(job)
+        from bivosia.processing.jobs import require_idle
+        require_idle(dataset)
+        if request.get('annotation') is not None:
+            dataset.settings['annotation'] = dataset.relative(dataset.annotation_path(request['annotation']))
+        if request['operation'] != 'vos':
+            from bivosia.dataset.analysis_inputs import processing_inputs
+            processing_inputs(dataset, request['operation'], request['settings'])
+        if request.get('annotation') is not None:
+            dataset.select_annotation(request['annotation'])
         return inspect(submit(dataset, request['operation'], request['settings'],
                               job_id=job.id, persistent=True))
     if action == 'list':
@@ -229,6 +291,10 @@ def serve(request):
         if request['action'] in ('read_file', 'write_file'):
             from bivosia.processing.file_operations import serve_file
             serve_file(request)
+            return
+        if request['action'] == 'data_session':
+            from bivosia.dataset.remote_reader import serve_data
+            serve_data(request)
             return
         if request['action'] == 'image_session':
             from bivosia.processing.remote_images import serve_images
@@ -261,4 +327,4 @@ def serve(request):
             sys.stdout.buffer.flush()
             print(json.dumps({'sha256': digest.hexdigest()}), flush=True)
     except Exception as error:
-        print(json.dumps({'error': str(error)}), flush=True)
+        print(json.dumps({'error': str(error), 'error_type': type(error).__name__}), flush=True)

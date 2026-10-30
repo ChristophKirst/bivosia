@@ -190,7 +190,7 @@ class GraphTimeline(TimelineBase):
         text = f"{value:.3g}"
         return text if "." in text or "e" in text.lower() else f"{text}.0"
 
-    def required_left_axis_width(self):
+    def required_left_margin(self):
         return max((
             self.fontMetrics().horizontalAdvance(self._format_axis_value(value))
             for value in self._quality_axis_tick_values()

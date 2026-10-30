@@ -17,7 +17,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 
 from pathlib import Path
 
-from bivosia.processing.remote_images import pack_arrays, unpack_arrays
+from bivosia.dataset.array_transport import pack_arrays, unpack_arrays
 from bivosia.processing.remote_session import RemoteSession
 from bivosia.segmentation.image import ImageSegmenter
 

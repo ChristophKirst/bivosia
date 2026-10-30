@@ -18,13 +18,34 @@ import time
 import uuid
 
 from bivosia.dataset.jsonio import atomic_json, read_json
-from bivosia.dataset.paths import file_name
+from bivosia.dataset.file_operations import checked_file
+from bivosia.dataset.paths import file_name, folder_path
 
 
 def valid_job_id(value):
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', value):
         raise ValueError('Invalid job ID')
     return value
+
+
+def is_job_path(relative):
+    """Identify execution records, which stay at the location where their job ran."""
+    return Path(relative).is_relative_to(folder_path('jobs'))
+
+
+def completed_job_folders(dataset, files):
+    """Read listed status files and return only completed job directories."""
+    result = []
+    for entry in files:
+        path, state = checked_file(dataset, entry['path'], entry['expected'])
+        if (path.name != file_name('job_status') or not any(
+                path.parent.parent == root / folder_path('jobs') for root in dataset.roots)):
+            raise ValueError(f'Expected a job status file: {path}')
+        status = read_json(path)
+        checked_file(dataset, path, state)
+        if status.get('state') == 'complete':
+            result.append(str(path.parent))
+    return result
 
 
 class Job:

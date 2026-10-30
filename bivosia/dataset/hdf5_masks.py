@@ -69,7 +69,10 @@ def linked_mask_streams(path):
 def stage_masks(path, shape, dtype, metadata, pending):
     """Write closed HDF5 partials for publication by the mask transaction."""
     partial = auxiliary_path(path, 'partial')
-    with h5py.File(partial, 'x') as file:
+    with partial.open('xb'):
+        pass
+    pending.append((partial, path))
+    with h5py.File(partial, 'w') as file:
         for name, value in metadata.items():
             file.attrs[name] = value
         file.attrs['complete'] = False
@@ -80,4 +83,3 @@ def stage_masks(path, shape, dtype, metadata, pending):
         yield masks, valid
         file.attrs['complete'] = True
         file.flush()
-    pending.append((partial, path))

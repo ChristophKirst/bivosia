@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 
-from bivosia.analysis.zone_detection import boolean_runs
+from bivosia.analysis.zones_of_disagreement import boolean_runs, frame_event_intervals
 from bivosia.analysis.keypoints import keypoint_identity_events
 from bivosia.ui.colors import linked_zone_colors
 from bivosia.ui.plot_models import IntervalBand, IntervalSpec, IntervalTrack, LegendGroup, MarkerSpec, ReferenceLine, RowSpec, SeriesSpec
@@ -25,7 +25,6 @@ from bivosia.ui.plot_styles import (
     METRIC_COLORS, MISSING_COLORS, KEYPOINT_SWAP_BORDER_COLOR,
     REGION_COLORS,
 )
-from bivosia.ui.frame_events import frame_event_intervals
 from bivosia.ui.plot_data import feature_curves, feature_ranges
 
 
@@ -255,14 +254,14 @@ def frame_event_legend(regions):
     return (LegendGroup('mask', items),)
 
 
-def viewer_zone_rows(regions, zones=(), *, callbacks=None, show_names=True):
+def viewer_zone_rows(regions, zones=(), *, callbacks=None, show_names=True, annotation_label='Hand'):
     """Configure the standard annotation and detection rows."""
     callbacks = callbacks or {}
     rows = []
     for lane in _track_lanes(regions):
         label = ZONE_ROW_LABELS.get(lane, lane)
         if lane == "Hand labels":
-            row = annotation_row(lane, label, zones, on_select=callbacks.get(lane), show_names=show_names)
+            row = annotation_row(lane, annotation_label, zones, on_select=callbacks.get(lane), show_names=show_names)
             rows.append(row)
             continue
         legend_labels = {
@@ -317,7 +316,7 @@ def configure_quality_plot(graph, arrays, labels, *, left_axis_width=0, referenc
     ])
     graph.reference_labels_visible = reference_labels_visible
     graph.fit_shared_y_range(include=(0., 1.))
-    graph.set_left_margin(max(left_axis_width, graph.required_left_axis_width()))
+    graph.set_left_margin(max(left_axis_width, graph.required_left_margin()))
     graph.setToolTip("Scroll / drag: time. Ctrl+scroll: zoom y; Ctrl+drag: pan y; Ctrl+right-click: reset y.")
     return available
 

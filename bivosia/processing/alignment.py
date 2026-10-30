@@ -23,10 +23,11 @@ import logging
 import numpy as np
 
 from bivosia.config import ANALYSIS_DEFAULTS, PROCESSING_DEFAULTS
-from bivosia.analysis.alignment import Alignment, iter_align_scores, alignment_valid_frames
-from bivosia.analysis.masks import mask_presence
-from bivosia.analysis.point_masks import point_mask_overlaps, point_overlap_scores
-from bivosia.analysis.revision import RevisionZone, preferred_sources
+from bivosia.analysis.alignment import (
+    Alignment, iter_align_scores, alignment_valid_frames, point_mask_overlaps, point_overlap_scores,
+)
+from bivosia.analysis.mask_features import mask_presence
+from bivosia.analysis.zones_of_disagreement import RevisionZone, preferred_sources
 from bivosia.dataset.jsonio import read_json
 from bivosia.dataset.keypoints import (annotation_digest, open_keypoints,
                                write_keypoint_alignment)
@@ -63,7 +64,7 @@ def _overlap_block(task):
 
 
 def calculate_keypoint_overlaps(dataset, points, sources, valid, n_masks, *,
-                                dilation_kernel=ANALYSIS_DEFAULTS['point_masks']['dilation_kernel'],
+                                dilation_kernel=ANALYSIS_DEFAULTS['alignment']['dilation_kernel'],
                                 workers=PROCESSING_DEFAULTS['alignment']['workers'],
                                 block_size=PROCESSING_DEFAULTS['alignment']['block_size'],
                                 progress=None, cancelled=None):
@@ -92,7 +93,7 @@ def calculate_keypoint_overlaps(dataset, points, sources, valid, n_masks, *,
 def calculate_keypoint_alignment(dataset, n_animals, *, invalid_point_frames=(),
                                  exclude_keypoints=(),
                                  fallback_previous=ANALYSIS_DEFAULTS['alignment']['fallback_previous'],
-                                 dilation_kernel=ANALYSIS_DEFAULTS['point_masks']['dilation_kernel'],
+                                 dilation_kernel=ANALYSIS_DEFAULTS['alignment']['dilation_kernel'],
                                  workers=PROCESSING_DEFAULTS['alignment']['workers'],
                                  block_size=PROCESSING_DEFAULTS['alignment']['block_size'],
                                  progress=None, cancelled=None, points=None):
