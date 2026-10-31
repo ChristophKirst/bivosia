@@ -4,7 +4,7 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
-from bivosia.analysis.linking import inverse, permutation, prepare_links
+from bivosia.analysis.mask_linking import inverse, permutation, prepare_links
 from bivosia.ui.colors import component_colors, identity_colors
 
 

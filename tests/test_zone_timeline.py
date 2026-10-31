@@ -16,9 +16,9 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QTableWidget, QWidget
 import numpy as np
 
-from bivosia.ui.annotations import Zone, annotate_zone_missing, revision_zone
+from bivosia.ui.annotations import ZodView, annotate_zone_missing, revision_zone
 from bivosia.analysis.alignment import align_scores
-from bivosia.analysis.zones_of_disagreement import RevisionZone
+from bivosia.analysis.zones_of_disagreement import ZodAnnotation
 from bivosia.ui.legend_panel import LegendPanel
 from bivosia.ui.player import FramePlayer, PlayerCursorController
 from bivosia.ui.plot_models import RowSpec, SeriesSpec
@@ -46,7 +46,7 @@ class ZoneTimelineTests(unittest.TestCase):
     def test_zone_legend_checkboxes_control_rows_and_survive_refreshes(self):
         app = QApplication.instance() or QApplication([])
         rows = viewer_zone_rows({'Hand labels': [], 'Auto zones': [(1, 3)]},
-                                [Zone('hand', range(2, 4))])
+                                [ZodView('hand', range(2, 4))])
         rows.append(RowSpec('connections', 'Links', legend=(), visible=False))
         detail = ZoneTimeline(6, rows=rows)
         overview = TimelineOverview(6, rows=rows)
@@ -89,7 +89,7 @@ class ZoneTimelineTests(unittest.TestCase):
         points = SimpleNamespace(alignment=align_scores(scores, valid), scores=scores,
                                  source=np.array([0, 0, 0, 0, 0, 2]),
                                  mask_present=np.repeat(valid[:, None], 2, axis=1))
-        links = SimpleNamespace(partition=(RevisionZone('a', 0, 5),), maps={'a': (0, 1)},
+        links = SimpleNamespace(partition=(ZodAnnotation('a', 0, 5),), maps={'a': (0, 1)},
                                 components={'a': 0}, errors=())
         tracks = keypoint_alignment_tracks(points, links,
             point_counts=np.array([[1, 1], [1, 1], [1, 1], [1, 1], [1, 0], [0, 0]]))
@@ -153,15 +153,15 @@ class ZoneTimelineTests(unittest.TestCase):
             panel.close()
 
     def test_reviewed_hand_row_shows_directional_validity_and_swaps(self):
-        zones = [revision_zone(RevisionZone(
+        zones = [revision_zone(ZodAnnotation(
             'hand-1', 2, 4, 'reverse', forward_valid=False, reverse_valid=True,
-            forward_swap=1, reverse_swap=2)), revision_zone(RevisionZone(
+            forward_swap=1, reverse_swap=2)), revision_zone(ZodAnnotation(
             'hand-2', 6, 8, 'invalid', forward_valid=False, reverse_valid=None)),
-            revision_zone(RevisionZone('hand-3', 10, 12, 'forward', forward_valid=True,
+            revision_zone(ZodAnnotation('hand-3', 10, 12, 'forward', forward_valid=True,
                                        reverse_valid=False, forward_swap=1)),
-            revision_zone(RevisionZone('hand-4', 14, 16, 'reverse', forward_valid=True,
+            revision_zone(ZodAnnotation('hand-4', 14, 16, 'reverse', forward_valid=True,
                                        reverse_valid=True, reverse_swap=1)),
-            revision_zone(RevisionZone('hand-5', 18, 20, 'invalid', forward_valid=False,
+            revision_zone(ZodAnnotation('hand-5', 18, 20, 'invalid', forward_valid=False,
                                        reverse_valid=False))]
         row = viewer_zone_rows({'Hand labels': []}, zones)[0]
         intervals = row.tracks[0].intervals
@@ -206,7 +206,7 @@ class ZoneTimelineTests(unittest.TestCase):
         ])
 
     def test_zone_table_uses_display_order_and_frame_columns(self):
-        zone = Zone(
+        zone = ZodView(
             "8c759f1147504a588793772628e301e8", tuple(range(20, 31)),
             missing_in_forward=True,
         )
@@ -214,15 +214,15 @@ class ZoneTimelineTests(unittest.TestCase):
             ZoneVideoViewer._zone_table_values(2, zone, 0.4138, True),
             ("Zone 3", 20, 30, 11, "F", "✓", "0.414"),
         )
-        no_missing = Zone("id", (20, 21))
-        unknown = Zone("id", (20, 21), missing_direction_unknown=True)
+        no_missing = ZodView("id", (20, 21))
+        unknown = ZodView("id", (20, 21), missing_direction_unknown=True)
         self.assertEqual(
             ZoneVideoViewer._zone_table_values(0, no_missing, None, False)[4], "∅"
         )
         self.assertEqual(
             ZoneVideoViewer._zone_table_values(0, unknown, None, False)[4], "?"
         )
-        historical_hand_swap = Zone("id", (20, 21), swap_in_forward=True)
+        historical_hand_swap = ZodView("id", (20, 21), swap_in_forward=True)
         self.assertEqual(
             ZoneVideoViewer._zone_table_values(
                 0, historical_hand_swap, None, False
@@ -379,7 +379,7 @@ class ZoneTimelineTests(unittest.TestCase):
         hits=[]
         regions={'Hand labels':[],
             'Missing forward only':[], 'Missing both':[], 'Switch frames':[], 'Combined seeds':[], 'Auto zones':[]}
-        rows=viewer_zone_rows(regions,[Zone('hand',tuple(range(4,9)))],
+        rows=viewer_zone_rows(regions,[ZodView('hand',tuple(range(4,9)))],
             callbacks={'Hand labels':lambda hit:hits.append((hit.interval.payload,hit.frame))})
         widget=ZoneTimeline(20,rows=rows)
         widget.resize(600,200)
@@ -394,8 +394,8 @@ class ZoneTimelineTests(unittest.TestCase):
     def test_hand_row_labels_use_display_numbers_not_internal_names(self):
         regions = {'Hand labels': []}
         zones = [
-            Zone('8c759f1147504a588793772628e301e8', tuple(range(4, 9))),
-            Zone('internal-zone-name', tuple(range(12, 16))),
+            ZodView('8c759f1147504a588793772628e301e8', tuple(range(4, 9))),
+            ZodView('internal-zone-name', tuple(range(12, 16))),
         ]
         row = viewer_zone_rows(regions, zones)[0]
         self.assertEqual([interval.label for interval in row.tracks[0].intervals], ['1', '2'])
@@ -462,7 +462,7 @@ class ZoneTimelineTests(unittest.TestCase):
         overview.close()
 
     def test_hand_zone_bands_keep_directional_missing_and_swap_flags(self):
-        zone=Zone('Region 14',tuple(range(2,5)),preferred_pass='FORWARD',
+        zone=ZodView('Region 14',tuple(range(2,5)),preferred_pass='FORWARD',
                   swap_in_forward=True,swap_in_reverse=True)
         missing=np.array([0,0,1,1,0,0],bool)
         forward=np.array([0,0,1,0,0,0],bool)

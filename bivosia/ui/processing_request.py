@@ -10,8 +10,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from bivosia.dataset.layout import Dataset
-from bivosia.processing.jobs import inspect, submit
-from bivosia.processing.preflight import check_inputs
+from bivosia.processing.jobs import check_inputs, inspect, submit
 from bivosia.ui.task import Task
 
 

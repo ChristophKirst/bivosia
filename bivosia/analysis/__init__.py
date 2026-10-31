@@ -13,7 +13,7 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
-from bivosia.analysis.quality import frame_quality_measures, permutation_change_measures
+from bivosia.analysis.mask_quality import frame_quality_measures, permutation_change_measures
 from bivosia.analysis.zones_of_disagreement import (
     ZodEvidence,
     ZodResult,

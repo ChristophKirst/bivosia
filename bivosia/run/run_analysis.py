@@ -24,7 +24,7 @@ if __package__ in (None, ""):
 
 from bivosia.dataset.layout import Dataset, datasets_in
 from bivosia.processing.log import configure_logging
-from bivosia.processing.quantify import quantify_many
+from bivosia.processing.analysis.mask_quality import quantify_many
 
 
 def main():
@@ -64,7 +64,7 @@ def main():
         if args.stage == 'align':
             if args.collection or args.temporal_intersections or args.annotations or args.no_convex_hull:
                 parser.error('Alignment uses one dataset and its selected mask annotation')
-            from bivosia.processing.alignment import calculate_keypoint_alignment
+            from bivosia.processing.analysis.alignment import calculate_keypoint_alignment
 
             calculate_keypoint_alignment(Dataset(args.dataset), args.n_animals,
                 exclude_keypoints=args.exclude_keypoints, **worker_options,
@@ -82,7 +82,7 @@ def main():
         else:
             if args.temporal_intersections or args.collection:
                 parser.error("Temporal intersections and collection processing apply only to quantify")
-            from bivosia.processing.features import calculate_dataset_features
+            from bivosia.processing.analysis.mask_features import calculate_dataset_features
 
             dataset = Dataset(args.dataset)
             outputs = calculate_dataset_features(

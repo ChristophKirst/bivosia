@@ -14,7 +14,7 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
-from bivosia.dataset.shape_features import shape_analysis_inputs
+from bivosia.dataset.mask_features import shape_analysis_inputs
 from bivosia.ui.analysis_window import AnalysisWindow
 from bivosia.ui.embedding_view import EmbeddingView
 

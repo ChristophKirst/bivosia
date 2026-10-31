@@ -20,7 +20,7 @@ import logging
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import QSlider, QVBoxLayout, QWidget
 
-from bivosia.dataset.video import VideoSet
+from bivosia.dataset.video import RecordingStreams
 from bivosia.ui.player import FramePlayer
 from bivosia.ui.video_panels import VideoViewGroup, ZoomableVideoLabel, image_from_bgr
 
@@ -80,7 +80,7 @@ class VideoPreview(QWidget):
             return
         videos = None
         try:
-            videos = VideoSet({'original': self.path})
+            videos = RecordingStreams({'original': self.path})
             self.set_videos(videos)
         except Exception as error:
             if videos is not None:

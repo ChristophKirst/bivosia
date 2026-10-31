@@ -31,12 +31,12 @@ from PySide6.QtWidgets import (
 from bivosia.ui.icons import action_icon
 from bivosia.analysis.zones_of_disagreement import boolean_runs
 from bivosia.config import JOB_TERMINAL_STATES
-from bivosia.dataset.jobs import write_script
+from bivosia.dataset.workflow.jobs import write_script
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.key_frame_recording import KeyFrameRecording
+from bivosia.dataset.annotations.keyframes import KeyFrameRecording
 from bivosia.dataset.masks import open_masks
 from bivosia.ui.processing_request import ProcessingRequest
-from bivosia.processing.segmentation import check
+from bivosia.processing.segmentation.vos import check
 from bivosia.ui.colors import bgr_colors, identity_colors
 from bivosia.ui.dock_panel import PanelHost, PanelSplitter
 from bivosia.ui.frame_previews import FramePreviews
@@ -189,8 +189,8 @@ class VosWindow(PanelHost):
         if self.task is not None or self.request is not None:
             self.status.setText('Wait for the current operation')
             return
-        from bivosia.dataset.remote_reader import RemoteDatasetReader
-        from bivosia.processing.remote_inventory import inspect_locations
+        from bivosia.dataset.storage.remote_reader import RemoteDatasetReader
+        from bivosia.dataset.workflow.status import inspect_locations
         from bivosia.ui.dataset_access import location_preferences
         profiles, preferred = location_preferences(dataset)
         def load():

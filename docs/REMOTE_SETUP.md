@@ -62,7 +62,7 @@ python -m pip install -e .
 Check the installed package from any directory:
 
 ```bash
-python -c "from bivosia.processing.remote import installation_info; print(installation_info())"
+python -c "from bivosia.processing.remote.server import installation_info; print(installation_info())"
 ```
 
 - Copy the reported **python** and **code** paths for registration.

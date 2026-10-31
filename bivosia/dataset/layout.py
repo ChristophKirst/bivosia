@@ -17,7 +17,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 from copy import deepcopy
 from pathlib import Path
 
-from bivosia.dataset.jsonio import atomic_json, read_json
+from bivosia.dataset.io.json import atomic_json, read_json
 from bivosia.dataset.paths import (companion_path, file_name, file_path, file_suffixes, folder_path,
                     folder_suffixes, storage_for)
 

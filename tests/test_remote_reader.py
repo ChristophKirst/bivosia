@@ -14,8 +14,8 @@ import numpy as np
 
 from bivosia.config import PACKAGE_DIRECTORY
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.remote_reader import RemoteDatasetReader
-from bivosia.processing.remote import BOOTSTRAP, Remote
+from bivosia.dataset.storage.remote_reader import RemoteDatasetReader
+from bivosia.processing.remote.client import BOOTSTRAP, Remote
 
 
 class LocalTransport(Remote):

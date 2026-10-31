@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from bivosia.config import KEY_FRAME_BACKENDS
-from bivosia.dataset.key_frame_recording import KeyFrameRecording
+from bivosia.dataset.annotations.keyframes import KeyFrameRecording
 from bivosia.segmentation.image import create_segmenter
 from bivosia.ui.colors import bgr_colors, identity_colors
 from bivosia.ui.dock_panel import PanelHost, PanelSplitter

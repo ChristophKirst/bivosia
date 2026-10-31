@@ -12,12 +12,12 @@ import unittest
 
 import numpy as np
 
-from bivosia.dataset.session import RevisionSession
-from bivosia.analysis.linking import initial_draft
-from bivosia.analysis.zones_of_disagreement import RevisionZone
+from bivosia.dataset.annotations.masks import RevisionSession
+from bivosia.analysis.mask_linking import initial_draft
+from bivosia.analysis.zones_of_disagreement import ZodAnnotation
 from bivosia.config import DATASET_LAYOUT
-from bivosia.dataset.jobs import Job
-from bivosia.dataset.key_frames import KeyFrameSession, MaskDraft
+from bivosia.dataset.workflow.jobs import Job
+from bivosia.dataset.annotations.keyframes import KeyFrameSession, MaskDraft
 from bivosia.dataset.paths import folder_path
 from bivosia.dataset.layout import Dataset
 
@@ -32,7 +32,7 @@ class DatasetTests(unittest.TestCase):
 
     def session(self):
         return RevisionSession({"seed": .6, "recover": .9, "gap": 0}, ((3, 6),),
-                               [RevisionZone("a", 3, 6)], np.zeros(10, bool), np.zeros(10, bool), 2)
+                               [ZodAnnotation("a", 3, 6)], np.zeros(10, bool), np.zeros(10, bool), 2)
 
     def test_defaults_follow_shared_configuration(self):
         folders = DATASET_LAYOUT['folders']

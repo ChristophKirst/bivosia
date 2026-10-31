@@ -5,26 +5,27 @@ __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 import unittest
 
 import h5py
 import numpy as np
 
-from bivosia.analysis.linking import initial_draft
+from bivosia.analysis.mask_linking import initial_draft
 from bivosia.analysis.mask_features import frame_zernike_features, missing_mask_counts, validate_shape_metadata
-from bivosia.analysis.zones_of_disagreement import RevisionZone, detection_parameters
-from bivosia.dataset.consensus_masks import ConsensusMasks, consensus_metadata
-from bivosia.dataset.jsonio import atomic_json, read_json
+from bivosia.analysis.zones_of_disagreement import ZodAnnotation, detection_parameters
+from bivosia.dataset.masks import ConsensusMaskReader, consensus_metadata
+from bivosia.dataset.io.json import atomic_json, read_json
 from bivosia.dataset.layout import Dataset
 from bivosia.dataset.paths import auxiliary_path
-from bivosia.dataset.processing_settings import step_settings
-from bivosia.dataset.session import RevisionSession
-from bivosia.dataset.shape_features import append_zernike, read_zernike, zernike_path
-from bivosia.processing.export import export_masks
-from bivosia.processing.input_sync import plan_input_sync
-from bivosia.processing.remote import dispatch
-from bivosia.processing.shape_features import extract_zernike
+from bivosia.dataset.workflow.processing import step_settings
+from bivosia.dataset.annotations.masks import RevisionSession
+from bivosia.dataset.mask_features import append_zernike, read_embedding, read_zernike, shape_analysis_inputs, zernike_path
+from bivosia.processing.analysis.mask_export import export_masks
+from bivosia.processing.storage.consolidation import plan_input_sync
+from bivosia.processing.remote.server import dispatch
+from bivosia.processing.analysis.mask_shape import extract_zernike, shape_features_job
 
 
 class ConsensusMaskTests(unittest.TestCase):
@@ -58,9 +59,9 @@ class ConsensusMaskTests(unittest.TestCase):
         for name in ('mask_iou_match', 'mask_quality', 'mask_missing', 'mask_switch'):
             np.save(dataset.array(name), np.zeros(8))
         atomic_json(dataset.file('mask_quality_metadata'), {'n_animals': 2})
-        zones = [RevisionZone('reverse', 2, 3, source='reverse', status='reviewed'),
-                 RevisionZone('invalid', 4, 4, source='invalid', status='reviewed'),
-                 RevisionZone('occluded', 6, 6, source='forward', status='automatic')]
+        zones = [ZodAnnotation('reverse', 2, 3, source='reverse', status='reviewed'),
+                 ZodAnnotation('invalid', 4, 4, source='invalid', status='reviewed'),
+                 ZodAnnotation('occluded', 6, 6, source='forward', status='automatic')]
         session = RevisionSession(dict(detection_parameters(.6, .9), mode='automatic'), (), zones,
                                   *missing_mask_counts(areas), 2)
         for job in session.jobs:
@@ -88,8 +89,8 @@ class ConsensusMaskTests(unittest.TestCase):
                 dataset, session, expected = self.dataset(root, suffix)
                 original = {path: path.read_bytes() for path in
                             (dataset.mask('forward'), dataset.mask('reverse'), session.path)}
-                with patch('bivosia.analysis.linking.match_masks', side_effect=AssertionError('Recomputed links')):
-                    with ConsensusMasks(dataset) as direct:
+                with patch('bivosia.analysis.mask_linking.match_masks', side_effect=AssertionError('Recomputed links')):
+                    with ConsensusMaskReader(dataset) as direct:
                         self.assertEqual(direct.metadata['mask_source'], 'annotation')
                         np.testing.assert_array_equal(direct[:], expected)
                         np.testing.assert_array_equal(direct[-1], expected[-1])
@@ -100,7 +101,7 @@ class ConsensusMaskTests(unittest.TestCase):
                 self.assertEqual(valid.tolist(), [True, True, True, True, False, True, True, True])
                 self.assertTrue(all(path.read_bytes() == contents for path, contents in original.items()))
                 self.export(dataset, session)
-                with ConsensusMasks(dataset) as automatic, ConsensusMasks(dataset, source='annotation') as direct:
+                with ConsensusMaskReader(dataset) as automatic, ConsensusMaskReader(dataset, source='annotation') as direct:
                     self.assertEqual(automatic.metadata['mask_source'], 'export')
                     np.testing.assert_array_equal(automatic[:], direct[:])
                     np.testing.assert_array_equal(automatic.valid, direct.valid)
@@ -109,24 +110,24 @@ class ConsensusMaskTests(unittest.TestCase):
         with TemporaryDirectory() as root:
             dataset, session, expected = self.dataset(root)
             with self.assertRaises(FileNotFoundError):
-                ConsensusMasks(dataset, source='export')
+                ConsensusMaskReader(dataset, source='export')
             path = self.export(dataset, session)
             forward = dataset.mask('forward')
             moved = forward.with_suffix('.saved')
             forward.rename(moved)
             try:
-                with ConsensusMasks(dataset) as reader:
+                with ConsensusMaskReader(dataset) as reader:
                     np.testing.assert_array_equal(reader[:], expected)
                 with self.assertRaises(FileNotFoundError):
-                    ConsensusMasks(dataset, source='annotation')
+                    ConsensusMaskReader(dataset, source='annotation')
             finally:
                 moved.rename(forward)
             with h5py.File(path, 'r+') as file:
                 file.attrs['annotation_fingerprint'] = 'outdated'
-            with ConsensusMasks(dataset) as reader:
+            with ConsensusMaskReader(dataset) as reader:
                 self.assertEqual(reader.metadata['mask_source'], 'annotation')
             with self.assertRaisesRegex(ValueError, 'do not match'):
-                ConsensusMasks(dataset, source='export')
+                ConsensusMaskReader(dataset, source='export')
             before = consensus_metadata(dataset, source='annotation')
             session.edit('reverse', 'source', source='forward')
             session.save()
@@ -134,7 +135,7 @@ class ConsensusMaskTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'different masks or settings'):
                 validate_shape_metadata(before, after)
             with self.assertRaisesRegex(ValueError, 'Cannot read consensus masks'):
-                ConsensusMasks(dataset, source='annotation')
+                ConsensusMaskReader(dataset, source='annotation')
 
     def test_sampled_features_keep_source_indices_and_full_results(self):
         with TemporaryDirectory() as root:
@@ -145,25 +146,60 @@ class ConsensusMaskTests(unittest.TestCase):
             sampling = dict(start_frame=0, end_frame=6, frame_step=2)
             subset_path = extract_zernike(dataset, radius=20, degree=2, **sampling)
             subset = read_zernike(subset_path, {'sampling': sampling})
-            self.assertEqual(subset[1].tolist(), [0, 0, 2, 2, 6])
-            selected = (full[1] <= 6) & (full[1] % 2 == 0)
-            for all_values, sampled in zip(full[:3], subset[:3]):
-                np.testing.assert_array_equal(sampled, all_values[selected])
+            self.assertEqual(subset.frames.tolist(), [0, 0, 2, 2, 6])
+            selected = (full.frames <= 6) & (full.frames % 2 == 0)
+            for name in ('values', 'frames', 'identities'):
+                np.testing.assert_array_equal(getattr(subset, name), getattr(full, name)[selected])
             self.assertEqual(full_path.read_bytes(), original)
             downsampled = extract_zernike(dataset, radius=20, degree=2, downsample_factor=2, **sampling)
             self.assertNotEqual(downsampled, subset_path)
             smaller = read_zernike(downsampled, {'downsample_factor': 2})
-            self.assertEqual(smaller[3]['image_shape'], [4, 6])
-            self.assertEqual(smaller[3]['source_image_shape'], [8, 12])
-            np.testing.assert_array_equal(smaller[1], subset[1])
-            np.testing.assert_array_equal(smaller[2], subset[2])
-            with ConsensusMasks(dataset) as masks:
-                for frame in np.unique(smaller[1]):
+            self.assertEqual(smaller.metadata['image_shape'], [4, 6])
+            self.assertEqual(smaller.metadata['source_image_shape'], [8, 12])
+            np.testing.assert_array_equal(smaller.frames, subset.frames)
+            np.testing.assert_array_equal(smaller.identities, subset.identities)
+            with ConsensusMaskReader(dataset) as masks:
+                for frame in np.unique(smaller.frames):
                     identities, values, excluded = frame_zernike_features(masks[frame], 20, 2, downsample_factor=2)
                     self.assertEqual(excluded, [])
-                    np.testing.assert_array_equal(smaller[2][smaller[1] == frame], identities)
-                    np.testing.assert_allclose(smaller[0][smaller[1] == frame], values)
+                    np.testing.assert_array_equal(smaller.identities[smaller.frames == frame], identities)
+                    np.testing.assert_allclose(smaller.values[smaller.frames == frame], values)
             self.assertEqual(full_path.read_bytes(), original)
+
+    def test_embedding_round_trip_retains_samples_scaling_and_parameters(self):
+        with TemporaryDirectory() as root:
+            dataset, _, _ = self.dataset(root)
+            with h5py.File(dataset.mask('forward'), 'r+') as file:
+                file['masks'][0, 1, 1] = 0
+            path = extract_zernike(dataset, radius=20, degree=2)
+            original = path.read_bytes()
+            descriptors = read_zernike(path, {})
+            for dimensions in (2, 3):
+                coordinates = np.arange(len(descriptors.frames) * dimensions, dtype=float).reshape(-1, dimensions)
+                parameters = {'n_components': dimensions, 'metric': 'euclidean'}
+                model = Mock()
+                model.fit_transform.return_value = coordinates
+                model.get_params.return_value = parameters
+                factory = Mock(return_value=model)
+                settings = dict(radius=20, degree=2, n_components=dimensions, z_score=True)
+                with patch.dict('sys.modules', {'umap': SimpleNamespace(UMAP=factory)}):
+                    _, output = shape_features_job(dataset, **settings)
+                    saved = read_embedding(output, {'n_components': dimensions})
+                    np.testing.assert_array_equal(saved.embedding.coordinates, coordinates)
+                    np.testing.assert_array_equal(saved.frames, descriptors.frames)
+                    np.testing.assert_array_equal(saved.identities, descriptors.identities)
+                    np.testing.assert_allclose(saved.embedding.mean, descriptors.values.mean(axis=0))
+                    np.testing.assert_allclose(model.fit_transform.call_args.args[0],
+                                              (descriptors.values - saved.embedding.mean) / saved.embedding.scale)
+                    self.assertEqual(saved.embedding.parameters, parameters)
+                    self.assertEqual(saved.metadata['feature_id'], descriptors.metadata['feature_id'])
+                    inputs = shape_analysis_inputs(dataset, settings)
+                    np.testing.assert_array_equal(inputs['coordinates'], coordinates)
+                    np.testing.assert_array_equal(inputs['frames'], descriptors.frames)
+                    np.testing.assert_array_equal(inputs['identities'], descriptors.identities)
+                    shape_features_job(dataset, **settings)
+                    factory.assert_called_once_with(n_components=dimensions)
+            self.assertEqual(path.read_bytes(), original)
 
     def test_failed_and_cancelled_feature_writes_allow_retry(self):
         with TemporaryDirectory() as root:
@@ -172,7 +208,7 @@ class ConsensusMaskTests(unittest.TestCase):
                          (dataset.mask('forward'), dataset.mask('reverse'), session.path)}
             destination = zernike_path(dataset)
             partial = auxiliary_path(destination, 'partial')
-            with self.assertLogs('bivosia.processing.shape_features', level='WARNING'):
+            with self.assertLogs('bivosia.processing.analysis.mask_shape', level='WARNING'):
                 with self.assertRaisesRegex(ValueError, 'At least four valid animal masks'):
                     extract_zernike(dataset, radius=1, degree=2)
             self.assertFalse(destination.exists())
@@ -182,7 +218,7 @@ class ConsensusMaskTests(unittest.TestCase):
             def append(*args):
                 append_zernike(*args)
                 written.append(True)
-            with patch('bivosia.processing.shape_features.append_zernike', side_effect=append):
+            with patch('bivosia.processing.analysis.mask_shape.append_zernike', side_effect=append):
                 with self.assertRaises(InterruptedError):
                     extract_zernike(dataset, radius=20, degree=2, block_size=1,
                                     cancelled=lambda: bool(written))
@@ -204,11 +240,11 @@ class ConsensusMaskTests(unittest.TestCase):
                 file['masks'][0, 0, 11] = 1
             originals = {path: path.read_bytes() for path in
                          (dataset.mask('forward'), dataset.mask('reverse'), session.path)}
-            with self.assertLogs('bivosia.processing.shape_features', level='WARNING') as warnings:
+            with self.assertLogs('bivosia.processing.analysis.mask_shape', level='WARNING') as warnings:
                 output = extract_zernike(dataset, radius=2, degree=2)
-            _, frames, identities, _ = read_zernike(output, {})
-            self.assertEqual(identities[frames == 0].tolist(), [2])
-            self.assertEqual(identities[frames == 1].tolist(), [1, 2])
+            descriptors = read_zernike(output, {})
+            self.assertEqual(descriptors.identities[descriptors.frames == 0].tolist(), [2])
+            self.assertEqual(descriptors.identities[descriptors.frames == 1].tolist(), [1, 2])
             self.assertEqual(len(warnings.records), 1)
             self.assertIn('Frame 0, animal 1: excluded', warnings.output[0])
             self.assertIn('Zernike radius 2 is too small', warnings.output[0])
@@ -223,17 +259,17 @@ class ConsensusMaskTests(unittest.TestCase):
             settings = dict(step_settings(dataset, 'shape_features'), radius=20, degree=2)
             path = extract_zernike(dataset, radius=20, degree=2)
             direct = read_zernike(path, {'mask_source': 'annotation'})
-            self.assertNotIn(4, direct[1])
-            self.assertEqual(direct[2][direct[1] == 6].tolist(), [2])
+            self.assertNotIn(4, direct.frames)
+            self.assertEqual(direct.identities[direct.frames == 6].tolist(), [2])
             path.rename(path.with_suffix('.saved.h5'))
             self.export(dataset, session)
             path = extract_zernike(dataset, radius=20, degree=2)
             exported = read_zernike(path, {'mask_source': 'export'})
-            for a, b in zip(direct[:3], exported[:3]):
-                np.testing.assert_array_equal(a, b)
+            for name in ('values', 'frames', 'identities'):
+                np.testing.assert_array_equal(getattr(direct, name), getattr(exported, name))
             location = {'host': '', 'path': str(dataset.directory)}
             for source in ('auto', 'export', 'annotation'):
-                with self.subTest(source=source), patch('bivosia.processing.input_sync.plan_consolidation') as plan:
+                with self.subTest(source=source), patch('bivosia.processing.storage.consolidation.plan_consolidation') as plan:
                     plan_input_sync(dataset, location, [], 'shape_features', settings=dict(settings, mask_source=source))
                     required = plan.call_args.kwargs['required']
                     has_export = dataset.relative(dataset.export_path(session.export['path'])) in required
@@ -249,7 +285,7 @@ class ConsensusMaskTests(unittest.TestCase):
                                'annotation': dataset.relative(session.path)})
             self.assertEqual(result['message'], 'Mask source: Exported masks')
             self.assertEqual(Dataset(root).annotation, other)
-            with patch('bivosia.processing.input_sync.plan_consolidation') as plan:
+            with patch('bivosia.processing.storage.consolidation.plan_consolidation') as plan:
                 plan_input_sync(dataset, location, [], 'shape_features', settings=settings,
                                 annotation=dataset.relative(session.path))
                 self.assertIn(dataset.relative(dataset.export_path(session.export['path'])),

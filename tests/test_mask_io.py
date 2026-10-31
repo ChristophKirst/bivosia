@@ -12,16 +12,14 @@ import unittest
 
 import numpy as np
 
-from bivosia.dataset.arrays import array_output
-from bivosia.dataset.containers import container_output
+from bivosia.dataset.io.arrays import array_output
+from bivosia.dataset.io.containers import container_output
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.mask_output import mask_outputs, write_masks
-from bivosia.dataset.masks import open_masks
-from bivosia.dataset.numpy_masks import validity_path
+from bivosia.dataset.masks import mask_outputs, write_masks, open_masks, vos_outputs
+from bivosia.dataset.io.numpy import validity_path
 from bivosia.dataset.paths import auxiliary_path
-from bivosia.dataset.segmentation import vos_outputs
-from bivosia.dataset.video import VideoSet
-from bivosia.processing.quantify import quantify_many
+from bivosia.dataset.video import RecordingStreams
+from bivosia.processing.analysis.mask_quality import quantify_many
 
 
 class MaskIOTests(unittest.TestCase):
@@ -70,7 +68,7 @@ class MaskIOTests(unittest.TestCase):
                     valid[:] = True
             quantify_many([dataset], 2, workers=1)
             np.testing.assert_array_equal(np.load(dataset.array('mask_iou_match')), [[0, 1]] * 3)
-            videos = VideoSet({name: dataset.mask(name) for name in ('forward', 'reverse')})
+            videos = RecordingStreams({name: dataset.mask(name) for name in ('forward', 'reverse')})
             try:
                 np.testing.assert_array_equal(videos.read('forward', 1), self.labels[1])
             finally:
@@ -129,7 +127,7 @@ class MaskIOTests(unittest.TestCase):
                     if len(calls) == 2:
                         raise OSError('Publication failed')
                     replace(source, target)
-                with patch('bivosia.dataset.mask_output.os.replace', side_effect=publish):
+                with patch('bivosia.dataset.masks.os.replace', side_effect=publish):
                     with self.assertRaisesRegex(OSError, 'Publication failed'):
                         with mask_outputs(paths, self.labels.shape) as outputs:
                             for masks, valid in outputs.values():

@@ -28,7 +28,7 @@ import json
 import numpy as np
 
 from bivosia.config import ANALYSIS_DEFAULTS, AUTO_DIRECTION_METHODS
-from bivosia.analysis.quality import frame_quality_measures, optimal_assignments, permutation_change_measures
+from bivosia.analysis.mask_quality import frame_quality_measures, optimal_assignments, permutation_change_measures
 
 
 Interval = tuple[int, int]
@@ -408,8 +408,8 @@ def validate_consensus_export(annotation, fingerprint):
 
 
 @dataclass(frozen=True)
-class RevisionZone:
-    """Mask choice and optional directional hand judgments for one interval.
+class ZodAnnotation:
+    """A ZoD interval with its mask choice, review status and directional judgments.
 
     Validity is true, false or unknown. Swap values are event counts;
     omitted counts mean zero. Counts do not identify event frames or approve
@@ -468,10 +468,10 @@ def critical_zones(zones, missing_forward, missing_reverse, *, automatic=False):
     An ordinary automatic choice does not require manual approval to be skipped.
     Invalid zones remain available for inspection even after review.
 
-    >>> from bivosia.analysis.zones_of_disagreement import RevisionZone, critical_zones
-    >>> zones = [RevisionZone('auto', 0, 1, status='automatic'),
-    ...          RevisionZone('invalid', 2, 3, source='invalid', status='reviewed'),
-    ...          RevisionZone('edited', 4, 5, status='needs_review')]
+    >>> from bivosia.analysis.zones_of_disagreement import ZodAnnotation, critical_zones
+    >>> zones = [ZodAnnotation('auto', 0, 1, status='automatic'),
+    ...          ZodAnnotation('invalid', 2, 3, source='invalid', status='reviewed'),
+    ...          ZodAnnotation('edited', 4, 5, status='needs_review')]
     >>> [zone.id for zone in critical_zones(zones, [0] * 6, [0] * 6)]
     ['invalid', 'edited']
     """
@@ -546,7 +546,7 @@ def default_source(start, end, missing_forward, missing_reverse, *, temporal_qua
 
 def new_zone(start, end, missing_forward, missing_reverse, *, temporal_quality=None,
              direction_method=ANALYSIS_DEFAULTS['zones_of_disagreement']['direction_method']):
-    return RevisionZone(uuid4().hex, int(start), int(end),
+    return ZodAnnotation(uuid4().hex, int(start), int(end),
                         default_source(start, end, missing_forward, missing_reverse,
                                        temporal_quality=temporal_quality, direction_method=direction_method))
 

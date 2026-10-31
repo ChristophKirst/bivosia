@@ -130,14 +130,13 @@ class MaskDisplayControl(QWidget):
         """Apply optional keypoints using this control's shared display state."""
         if self.keypoints is None or not self.keypoints.isChecked() or data is None:
             return image
-        points = data[frame]
+        points = data.reader[frame]
         if not self.all_keypoints.isChecked():
-            selected = [name not in data.excluded_keypoints for name in data.node_names]
-            points = points[:, selected, :]
+            points = points[:, data.selected_node_ids, :]
         assignment = np.full(len(points), -1, dtype=np.intp)
         if data.alignment is not None and data.source[frame] == ('forward', 'reverse').index(source):
             assignment = data.alignment.assignment[frame]
-        return overlay_keypoints(image, points, assignment, data.image_shape,
+        return overlay_keypoints(image, points, assignment, data.reader.image_shape,
                                  self.keypoint_mode.currentData(), label_colors)
 
 

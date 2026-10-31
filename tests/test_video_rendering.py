@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QApplication
 import cv2
 import numpy as np
 
-from bivosia.analysis.linking import LinkResult
+from bivosia.analysis.mask_linking import LinkResult
 from bivosia.analysis.mask_features import mask_centers
 from bivosia.dataset.video import VideoBuffer
 from bivosia.ui.link_editor import MaskPane

@@ -440,7 +440,7 @@ Example SLEAP settings:
   the number of processing blocks. Existing results are protected.
 - In the viewer, enable **Keypoints** and choose **Original label**, **Assigned label**
   or **Both**. Both shows the original color inside the assigned color.
-- Alignment algorithms use generic `PointData`; SLEAP is the current file-reader specialization.
+- Alignment algorithms use generic `KeypointReader`; SLEAP is the current file-reader specialization.
 
 ## Data formats and storage
 
@@ -564,7 +564,15 @@ bivosia/                  # project root
     config.py
     analysis/
     dataset/
+      io/
+      annotations/
+      storage/
+      workflow/
     processing/
+      analysis/
+      segmentation/
+      storage/
+      remote/
     segmentation/
     ui/
     run/
@@ -584,10 +592,18 @@ python -m build
 
 | Folder | Responsibility |
 |---|---|
-| `dataset/` | Dataset paths, readers and persistence. |
+| `dataset/` | Dataset layout, recordings and data-specific readers. |
+| `dataset/io/` | Reader interfaces, format registry, adapters and array transport. |
+| `dataset/annotations/` | `keyframes.py` manages segmentation annotations; `masks.py` manages mask selection, review and identity-link annotations. |
+| `dataset/storage/` | Locations, inventory, file operations and remote readers. |
+| `dataset/workflow/` | Processing settings, input validation, job records and completion status. |
 | `segmentation/` | Segmentation adapters. |
 | `analysis/` | Calculations, quality, detection, revision and linking. |
-| `processing/` | Recording/block execution, progress and outputs. |
+| `processing/` | Shared job lifecycle, workflow execution, workers and logging. |
+| `processing/analysis/` | Recording/block analysis, progress and outputs. |
+| `processing/segmentation/` | Key-frame prediction, video segmentation and model installation. |
+| `processing/storage/` | File/folder transfers, consolidation and input synchronization. |
+| `processing/remote/` | Shared SSH client, request dispatch and persistent sessions. |
 | `ui/` | Shared widgets, presentation and interaction. |
 | `run/` | Application and command-line entry points. |
 | `docs/` | User guides and implementation notes. |

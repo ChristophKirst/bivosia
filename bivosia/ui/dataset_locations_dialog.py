@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFormLayout, QHB
                                QPushButton, QVBoxLayout)
 
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.locations import location_for, remote_locations, remote_path, save_locations
+from bivosia.dataset.storage.locations import location_for, remote_locations, remote_path, save_locations
 from bivosia.ui.window_manager import notify_dataset_changed
 from bivosia.ui.icons import action_icon
 from bivosia.ui.remote_settings import remote_settings

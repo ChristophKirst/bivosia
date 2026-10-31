@@ -14,7 +14,7 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
-from bivosia.dataset.analysis_inputs import processing_inputs
+from bivosia.dataset.workflow.processing import processing_inputs
 from bivosia.ui.analysis_window import AnalysisWindow
 
 

@@ -23,8 +23,8 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QWidget
 
 from bivosia.config import KEY_FRAME_BACKENDS
-from bivosia.processing.remote_images import check_models
-from bivosia.processing.remote_session import RemoteSession
+from bivosia.processing.segmentation.keyframes import check_models
+from bivosia.processing.remote.session import RemoteSession
 from bivosia.segmentation.image import model_availability
 from bivosia.ui.icons import action_icon
 from bivosia.ui.model_install_dialog import ModelInstallDialog

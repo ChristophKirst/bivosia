@@ -20,7 +20,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 from PySide6.QtCore import Qt
 
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.jsonio import read_json
+from bivosia.dataset.io.json import read_json
 from bivosia.ui.application_menus import add_dataset_window_menus
 from bivosia.ui.window_manager import dataset_windows
 from bivosia.ui.zone_video_viewer import ZoneVideoViewer
@@ -44,14 +44,14 @@ def create_recording_viewer(dataset, *, zone_rows=(), parent=None, open_dataset=
     the recording readers. Optional controls supply a (title, widget) pair for
     the viewer's left column.
     """
-    from bivosia.processing.revision import RevisionData
+    from bivosia.dataset.recording import RevisionRecording
     from bivosia.config import ANALYSIS_DEFAULTS
-    from bivosia.dataset.session import RevisionSession, load_revision_zones
+    from bivosia.dataset.annotations.masks import RevisionSession, load_revision_zones
     from bivosia.ui.annotations import revision_zone
-    from bivosia.analysis.linking import prepare_links
+    from bivosia.analysis.mask_linking import prepare_links
 
     from bivosia.ui.dataset_access import open_remote_reader
-    data = RevisionData(dataset, remote_reader=open_remote_reader(dataset, optional=True), require_analysis=False)
+    data = RevisionRecording(dataset, remote_reader=open_remote_reader(dataset, optional=True), require_analysis=False)
     try:
         annotation = data.annotation
         session = (RevisionSession.load(annotation, data.missing_forward, data.missing_reverse, data.n,

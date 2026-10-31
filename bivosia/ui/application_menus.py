@@ -12,7 +12,7 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox
 
 from bivosia.config import APPLICATION_SETTINGS, RESOURCE_DIRECTORY
-from bivosia.dataset.text import read_text
+from bivosia.dataset.io.text import read_text
 from bivosia.ui.about_dialog import show_about
 from bivosia.ui.icons import action_icon
 from bivosia.ui.remote_installations_dialog import RemoteInstallationsDialog

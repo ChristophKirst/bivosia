@@ -22,7 +22,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 from pathlib import Path
 
 from bivosia.config import DATASET_LAYOUT, FILE_PATTERNS
-from bivosia.dataset.formats import format_spec, format_suffixes
+from bivosia.dataset.io.registry import format_spec, format_suffixes
 
 
 def folder_entries(node=None, parent=Path(), storage=None):
@@ -93,7 +93,7 @@ def companion_path(path, key, companion):
 
 
 def auxiliary_path(path, kind):
-    """Locate partial, lock or download files using shared naming patterns."""
+    """Locate partial or lock files using shared naming patterns."""
     path = Path(path)
     return path.with_name(FILE_PATTERNS[kind].format(name=path.name, stem=path.stem))
 

@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, QSettings, Signal
 from PySide6.QtWidgets import QApplication
 
 from bivosia.config import APPLICATION_SETTINGS, REMOTE_SETTINGS
-from bivosia.dataset.locations import remote_path
+from bivosia.dataset.storage.locations import remote_path
 
 
 class RemoteSettings(QObject):

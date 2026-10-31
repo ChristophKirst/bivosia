@@ -11,7 +11,7 @@ import unittest
 import h5py
 import numpy as np
 
-from bivosia.dataset.keypoint_import import select_keypoints
+from bivosia.dataset.keypoints import select_keypoints
 from bivosia.dataset.layout import Dataset
 
 

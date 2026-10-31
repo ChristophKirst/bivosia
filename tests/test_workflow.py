@@ -12,14 +12,14 @@ import unittest
 import h5py
 import numpy as np
 
-from bivosia.analysis.linking import automatic_link, boundaries, initial_draft, linked_frame, match_masks, prepare_links, validation_errors
-from bivosia.analysis.zones_of_disagreement import RevisionZone, detection_parameters
-from bivosia.dataset.jsonio import read_json
+from bivosia.analysis.mask_linking import automatic_link, boundaries, initial_draft, linked_frame, match_masks, prepare_links, validation_errors
+from bivosia.analysis.zones_of_disagreement import ZodAnnotation, detection_parameters
+from bivosia.dataset.io.json import read_json
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.session import RevisionSession
-from bivosia.dataset.shape_features import ShapeResults, shape_analysis_inputs
-from bivosia.dataset.workflow import inspect_workflow, workflow_snapshot
-from bivosia.processing.remote_inventory import inspect_locations
+from bivosia.dataset.annotations.masks import RevisionSession
+from bivosia.dataset.mask_features import MaskShapeResults, shape_analysis_inputs
+from bivosia.dataset.workflow.status import inspect_workflow, workflow_snapshot
+from bivosia.dataset.workflow.status import inspect_locations
 from bivosia.processing.workflow import required_products, step_availability, workflow_job
 
 
@@ -50,7 +50,7 @@ class WorkflowTests(unittest.TestCase):
             other.save(dataset.new_annotation(.6, .9, prefix='other_'))
             dataset.select_annotation(session.path)
             original = session.path.read_bytes()
-            with patch('bivosia.analysis.linking.match_masks', side_effect=AssertionError('Recomputed links')):
+            with patch('bivosia.analysis.mask_linking.match_masks', side_effect=AssertionError('Recomputed links')):
                 info = inspect_workflow(dataset)
             self.assertTrue(info['annotation']['valid'], info['annotation'])
             self.assertIsNone(info['export'])
@@ -75,7 +75,7 @@ class WorkflowTests(unittest.TestCase):
             settings = {'preprocess_masks': True, 'z_score': True, 'downsample_factor': 2}
             dataset.settings['processing'] = {'shape_features': settings}
             dataset.save()
-            results = ShapeResults(dataset, dict(settings, radius=20, degree=4))
+            results = MaskShapeResults(dataset, dict(settings, radius=20, degree=4))
             features = dict(results.feature_expected, feature_id='test-descriptors')
             for kind, metadata in (('mask_zernike', features),
                                     ('mask_umap', results.embedding_expected(features))):
@@ -184,7 +184,7 @@ class WorkflowTests(unittest.TestCase):
                                               'metadata': None, 'error': ''}
                                         for name in ('mask_zernike', 'mask_umap')}
                 return snapshot
-            with patch('bivosia.processing.remote_inventory.Remote.call', side_effect=inspect_remote):
+            with patch('bivosia.dataset.workflow.status.Remote.call', side_effect=inspect_remote):
                 info = inspect_locations(local, [profile], include_workflow=True)
             self.assertTrue(info['annotation']['valid'], info['annotation'])
             self.assertEqual(info['annotation']['path'], session.path)
@@ -215,7 +215,7 @@ class WorkflowTests(unittest.TestCase):
     def test_invalid_interval_matches_at_next_valid_frame(self):
         first = np.array([[1, 1, 0, 2, 2]], dtype=np.uint8)
         propagated = np.array([[2, 2, 0, 1, 1]], dtype=np.uint8)
-        zone = RevisionZone('invalid', 1, 3, source='invalid', status='automatic')
+        zone = ZodAnnotation('invalid', 1, 3, source='invalid', status='automatic')
         job = boundaries([zone], 5)[0]
         # Incoming forward labels have moved across the invalid interval.
         calls = []
@@ -228,7 +228,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(match_masks(first, propagated, 2).mapping, (1, 0))
         self.assertEqual(record['status'], 'automatic')
         self.assertIsNone(record['approved'])
-        reverse_zone = RevisionZone('reverse', 4, 4, source='reverse', status='automatic')
+        reverse_zone = ZodAnnotation('reverse', 4, 4, source='reverse', status='automatic')
         job = boundaries([zone, reverse_zone], 5)[0]
         record = automatic_link(job, lambda source, frame: propagated if source == 'forward' and frame == 4 else first, 2)
         self.assertEqual(record['automatic']['canonical_mapping'], [1, 0])
@@ -299,7 +299,7 @@ class WorkflowTests(unittest.TestCase):
                 if remote_analysis:
                     snapshot['analysis'] = workflow_snapshot(local)['analysis']
                 with self.subTest(remote_analysis=remote_analysis), patch(
-                        'bivosia.processing.remote_inventory.Remote.call', return_value=snapshot):
+                        'bivosia.dataset.workflow.status.Remote.call', return_value=snapshot):
                     info = inspect_locations(local, [profile], include_workflow=True)
                 self.assertEqual(info['mask_remote'].host, 'workstation')
                 self.assertIsNone(info['analysis_remote'])

@@ -1,4 +1,4 @@
-"""Recording-scale execution of BiVOSIA analysis."""
+"""Execute analysis, segmentation and storage operations through shared jobs and workflows."""
 
 from __future__ import annotations
 

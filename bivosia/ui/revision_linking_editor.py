@@ -45,12 +45,12 @@ from bivosia.ui.timeline_group import TimelineGroup
 from bivosia.ui.viewer_plot_config import FeaturePlotController
 from bivosia.ui.window_manager import dataset_windows, notify_dataset_changed
 from bivosia.ui.zone_plot import ZoneTimeline, TimelineOverview, ZonePanel
-from bivosia.analysis.linking import critical_links, inverse, swap_endpoint, unresolved_links, validation_errors
+from bivosia.analysis.mask_linking import critical_links, inverse, swap_endpoint, unresolved_links, validation_errors
 from bivosia.analysis.zones_of_disagreement import critical_zones
 from bivosia.ui.playback import zone_loop, link_loops, upcoming_frames
-from bivosia.processing.revision import RevisionData
-from bivosia.processing.zod_detection import calculate_links, prepare_automatic_annotation
-from bivosia.dataset.session import RevisionSession
+from bivosia.dataset.recording import RevisionRecording
+from bivosia.processing.analysis.zones_of_disagreement import calculate_links, prepare_automatic_annotation
+from bivosia.dataset.annotations.masks import RevisionSession
 from bivosia.dataset.layout import Dataset
 from bivosia.dataset.video import VideoBuffer
 
@@ -359,7 +359,7 @@ class RevisionLinkingWindow(PanelHost):
         if dataset is None or dataset.directory != directory:
             dataset = Dataset(directory)
         from bivosia.ui.dataset_access import open_remote_reader
-        data = RevisionData(dataset, remote_reader=open_remote_reader(dataset))
+        data = RevisionRecording(dataset, remote_reader=open_remote_reader(dataset))
         self.dataset = dataset
         if self.parameters.store.dataset.directory != dataset.directory:
             self.parameters.set_dataset(dataset)

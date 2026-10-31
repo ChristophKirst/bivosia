@@ -12,10 +12,10 @@ import unittest
 import h5py
 import numpy as np
 
-from bivosia.processing.export import export_masks
-from bivosia.analysis.linking import initial_draft, link_segments, match_masks, prepare_links, validation_errors
-from bivosia.dataset.session import RevisionSession
-from bivosia.analysis.zones_of_disagreement import RevisionZone
+from bivosia.processing.analysis.mask_export import export_masks
+from bivosia.analysis.mask_linking import initial_draft, link_segments, match_masks, prepare_links, validation_errors
+from bivosia.dataset.annotations.masks import RevisionSession
+from bivosia.analysis.zones_of_disagreement import ZodAnnotation
 from bivosia.dataset.layout import Dataset
 
 
@@ -29,7 +29,7 @@ class LinkFrameTests(unittest.TestCase):
         session.approve(job.id, mapping)
 
     def test_inside_zone_and_gap_preserve_geometry_sources_and_existing_links(self):
-        zones = [RevisionZone("z", 10, 19, "reverse", True, "reviewed")]
+        zones = [ZodAnnotation("z", 10, 19, "reverse", True, "reviewed")]
         s = self.session(zones)
         for job in s.jobs:
             self.approve(s, job)
@@ -49,7 +49,7 @@ class LinkFrameTests(unittest.TestCase):
         self.assertEqual([t for p in parts for t in range(p.start, p.end + 1)], list(range(30)))
 
     def test_coincident_zone_boundary_reuses_existing_link(self):
-        s = self.session([RevisionZone("z", 10, 19, "reverse")])
+        s = self.session([ZodAnnotation("z", 10, 19, "reverse")])
         job = next(j for j in s.jobs if j.left.end == 9)
         self.approve(s, job)
         before = s._state()
@@ -79,7 +79,7 @@ class LinkFrameTests(unittest.TestCase):
             self.assertEqual(loaded.links['frame:5']['status'], 'draft')
 
     def test_invalid_frames_reject_without_changing_state(self):
-        s = self.session([RevisionZone("invalid", 10, 19, "invalid")])
+        s = self.session([ZodAnnotation("invalid", 10, 19, "invalid")])
         before = s._state()
         for t in (-1, 9, 12, 19, 29):
             with self.subTest(t=t), self.assertRaises(ValueError):
@@ -87,7 +87,7 @@ class LinkFrameTests(unittest.TestCase):
             self.assertEqual(s._state(), before)
 
     def test_event_survives_zone_changes_and_undo(self):
-        s = self.session([RevisionZone("z", 10, 19, "forward", True, "reviewed")])
+        s = self.session([ZodAnnotation("z", 10, 19, "forward", True, "reviewed")])
         s.set_link_frame(12, True)
         job = next(j for j in s.jobs if j.id == "frame:12")
         self.approve(s, job, (1, 0))

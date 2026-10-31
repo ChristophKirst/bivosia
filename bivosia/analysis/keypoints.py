@@ -17,7 +17,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 import numpy as np
 
 from bivosia.analysis.alignment import align_scores
-from bivosia.analysis.linking import permutation
+from bivosia.analysis.mask_linking import permutation
 
 
 def keypoint_counts(points):
@@ -188,8 +188,8 @@ def keypoint_detection_events(result, scores, point_counts, n_masks, valid):
 
     >>> import numpy as np
     >>> from bivosia.analysis.keypoints import keypoint_detection_events
-    >>> from bivosia.analysis.alignment import Alignment
-    >>> result = Alignment(np.array([[-1, 0]]), np.array([True]), np.array([False]))
+    >>> from bivosia.analysis.alignment import AlignmentResult
+    >>> result = AlignmentResult(np.array([[-1, 0]]), np.array([True]), np.array([False]))
     >>> events = keypoint_detection_events(result, np.array([[[0, 0], [1, 0]]]),
     ...                                    np.array([[0, 1]]), 2, np.array([True]))
     >>> events['missing skeleton'].tolist(), events['no overlap'].tolist()

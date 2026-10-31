@@ -16,7 +16,7 @@ import numpy as np
 
 from bivosia.dataset.paths import folder_suffixes
 from bivosia.dataset.masks import open_masks
-from bivosia.dataset.formats import format_handler
+from bivosia.dataset.io.registry import format_handler
 
 
 def open_video(path, *, color='rgb', format=None):
@@ -109,7 +109,9 @@ class VideoBuffer:
             self.cached_bytes = 0
 
 
-class VideoSet:
+class RecordingStreams:
+    """Own named video and mask readers with shared frame access and video buffering."""
+
     def __init__(self, paths: dict[str, Path], *, masks=None) -> None:
         self.masks = dict(masks or {})
         self.buffers = {}

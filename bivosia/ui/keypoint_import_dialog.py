@@ -18,7 +18,7 @@ from functools import partial
 
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QLineEdit, QVBoxLayout
 
-from bivosia.dataset.keypoint_import import keypoint_image_shape, select_keypoints
+from bivosia.dataset.keypoints import keypoint_image_shape, select_keypoints
 from bivosia.dataset.layout import Dataset
 from bivosia.ui.parameters import ParameterForm
 from bivosia.ui.task import Task

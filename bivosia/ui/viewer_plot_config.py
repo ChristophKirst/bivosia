@@ -163,8 +163,8 @@ def annotation_row(key, label, zones, *, on_select=None, show_names=True):
 
     >>> from bivosia.ui.plot_styles import HAND_SWAP_COLORS
     >>> from bivosia.ui.viewer_plot_config import annotation_row
-    >>> from bivosia.ui.annotations import Zone
-    >>> zone = Zone('1', (3, 4), swap_in_reverse=True)
+    >>> from bivosia.ui.annotations import ZodView
+    >>> zone = ZodView('1', (3, 4), swap_in_reverse=True)
     >>> row = annotation_row('Hand', 'Hand', [zone])
     >>> row.tracks[0].intervals[0].bands[-1].color == HAND_SWAP_COLORS['REVERSE']
     True

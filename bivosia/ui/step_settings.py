@@ -7,7 +7,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
-from bivosia.dataset.processing_settings import step_settings, save_step_settings
+from bivosia.dataset.workflow.processing import step_settings, save_step_settings
 from bivosia.dataset.layout import Dataset
 from bivosia.ui.window_manager import notify_dataset_changed
 

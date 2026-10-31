@@ -25,19 +25,18 @@ from PySide6.QtWidgets import (QDialog, QFileDialog, QHeaderView, QHBoxLayout, Q
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from bivosia.ui.icons import action_icon
-from bivosia.dataset.formats import file_inspector, format_handler, format_spec, format_suffixes
-from bivosia.dataset.inventory import FileMetadata
-from bivosia.dataset.jobs import is_job_path
+from bivosia.dataset.io.registry import file_inspector, format_handler, format_spec, format_suffixes
+from bivosia.dataset.io.interfaces import FileMetadata
+from bivosia.dataset.workflow.jobs import is_job_path
 from bivosia.dataset.paths import folder_path
-from bivosia.processing.file_operations import (copy_selected_file, delete_selected_file,
+from bivosia.processing.storage.file_operations import (copy_selected_file, delete_selected_file,
                                                file_locations, move_selected_file)
-from bivosia.processing.folder_operations import (completed_job_entries, delete_folder_entries, folder_entries,
+from bivosia.processing.storage.folder_operations import (completed_job_entries, delete_folder_entries, folder_entries,
                                                  plan_folder_transfer, transfer_folder)
-from bivosia.processing.remote_inventory import scan_locations
+from bivosia.dataset.storage.inventory import scan_locations
 from bivosia.ui.dataset_locations_dialog import DatasetLocationsDialog
 from bivosia.ui.consolidation_dialog import ConsolidationDialog
-from bivosia.processing.consolidation import plan_consolidation, consolidate
-from bivosia.processing.input_sync import plan_input_sync
+from bivosia.processing.storage.consolidation import plan_consolidation, plan_input_sync, consolidate
 from bivosia.ui.remote_settings import remote_settings
 from bivosia.ui.colors import identity_colors
 from bivosia.ui.dock_panel import PanelSplitter

@@ -21,7 +21,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from bivosia.dataset.paths import file_path
-from bivosia.dataset.organize import apply_plan, plan_collection
+from bivosia.dataset.storage.organize import apply_plan, plan_collection
 from bivosia.processing.log import configure_logging
 
 

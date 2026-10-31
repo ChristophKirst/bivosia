@@ -19,9 +19,9 @@ import numpy as np
 from bivosia.ui.playback import (
     link_loops, next_frame, padded_loop, upcoming_frames, zone_loop,
 )
-from bivosia.dataset.session import RevisionSession
-from bivosia.analysis.linking import automatic_link, boundaries, critical_links, initial_draft, validate_draft
-from bivosia.analysis.zones_of_disagreement import RevisionZone, critical_zones
+from bivosia.dataset.annotations.masks import RevisionSession
+from bivosia.analysis.mask_linking import automatic_link, boundaries, critical_links, initial_draft, validate_draft
+from bivosia.analysis.zones_of_disagreement import ZodAnnotation, critical_zones
 from bivosia.ui.link_colors import LinkColors
 from bivosia.ui.plot_models import IntervalSpec, IntervalTrack, RowSpec
 from bivosia.ui.quality_plot import GraphTimeline
@@ -36,7 +36,7 @@ from bivosia.ui.zone_plot import ZoneTimeline, TimelineOverview
 
 class PlaybackRangesTests(unittest.TestCase):
     def test_zone_and_background_ranges(self):
-        zone = RevisionZone("z", 200, 250)
+        zone = ZodAnnotation("z", 200, 250)
         entry, exit = boundaries([zone], 500)
         self.assertEqual(padded_loop(200, 250, 500), (150, 300))
         self.assertEqual(zone_loop(zone, 500), (150, 300))
@@ -44,7 +44,7 @@ class PlaybackRangesTests(unittest.TestCase):
         self.assertEqual(link_loops(exit, [zone], 500), {"left": (150, 250), "right": (251, 350)})
 
     def test_adjacent_short_background_and_internal_links(self):
-        zones = [RevisionZone("a", 5, 30), RevisionZone("b", 31, 60), RevisionZone("c", 70, 99)]
+        zones = [ZodAnnotation("a", 5, 30), ZodAnnotation("b", 31, 60), ZodAnnotation("c", 70, 99)]
         jobs = boundaries(zones, 100, (20,))
         adjacent = next(j for j in jobs if j.left.end == 30)
         self.assertEqual(link_loops(adjacent, zones, 100), {"left": (0, 30), "right": (31, 99)})
@@ -54,13 +54,13 @@ class PlaybackRangesTests(unittest.TestCase):
         self.assertEqual(link_loops(short, zones, 100)["right"], (61, 99))
 
     def test_short_zone_loops_have_at_least_100_frames(self):
-        zone = RevisionZone("z", 200, 205)
+        zone = ZodAnnotation("z", 200, 205)
         entry, exit = boundaries([zone], 500)
         self.assertEqual(link_loops(entry, [zone], 500), {"left": (100, 199), "right": (200, 299)})
         self.assertEqual(link_loops(exit, [zone], 500), {"left": (106, 205), "right": (206, 305)})
 
     def test_background_loops_are_not_clipped_at_neighbor_zones(self):
-        zones = [RevisionZone("a", 100, 160), RevisionZone("b", 170, 180)]
+        zones = [ZodAnnotation("a", 100, 160), ZodAnnotation("b", 170, 180)]
         jobs = boundaries(zones, 500)
         exit = next(j for j in jobs if j.left.end == 160)
         entry = next(j for j in jobs if j.right.start == 170)
@@ -68,13 +68,13 @@ class PlaybackRangesTests(unittest.TestCase):
         self.assertEqual(link_loops(entry, zones, 500)["left"], (70, 169))
 
     def test_adjacent_long_zones_pad_only_the_outer_edges(self):
-        zones = [RevisionZone("a", 100, 300), RevisionZone("b", 301, 600)]
+        zones = [ZodAnnotation("a", 100, 300), ZodAnnotation("b", 301, 600)]
         job = next(j for j in boundaries(zones, 1000) if j.left.end == 300)
         self.assertEqual(link_loops(job, zones, 1000), {"left": (50, 300), "right": (301, 650)})
 
     def test_invalid_bridge_keeps_its_separate_inner_anchors(self):
-        zones = [RevisionZone("a", 100, 150), RevisionZone("bad", 151, 170, "invalid"),
-                 RevisionZone("b", 171, 180)]
+        zones = [ZodAnnotation("a", 100, 150), ZodAnnotation("bad", 151, 170, "invalid"),
+                 ZodAnnotation("b", 171, 180)]
         job = next(j for j in boundaries(zones, 500) if j.left.end == 150)
         self.assertEqual(link_loops(job, zones, 500), {"left": (50, 150), "right": (171, 270)})
 
@@ -101,13 +101,13 @@ class PlayerWidgetTests(unittest.TestCase):
     def test_critical_zone_navigation_skips_ordinary_automatic_choices(self):
         missing = np.zeros(80, dtype=int)
         missing[40] = missing[50] = 1
-        zones = [RevisionZone('first', 0, 4, status='automatic'),
-                 RevisionZone('ordinary', 10, 14, status='automatic'),
-                 RevisionZone('invalid', 20, 24, source='invalid', status='automatic'),
-                 RevisionZone('edited', 30, 34, status='needs_review'),
-                 RevisionZone('incomplete', 40, 44, status='reviewed'),
-                 RevisionZone('permitted', 50, 54, status='automatic'),
-                 RevisionZone('last', 60, 64, status='reviewed')]
+        zones = [ZodAnnotation('first', 0, 4, status='automatic'),
+                 ZodAnnotation('ordinary', 10, 14, status='automatic'),
+                 ZodAnnotation('invalid', 20, 24, source='invalid', status='automatic'),
+                 ZodAnnotation('edited', 30, 34, status='needs_review'),
+                 ZodAnnotation('incomplete', 40, 44, status='reviewed'),
+                 ZodAnnotation('permitted', 50, 54, status='automatic'),
+                 ZodAnnotation('last', 60, 64, status='reviewed')]
         session = RevisionSession({'mode': 'automatic'}, (), zones, missing, np.zeros(80, int), 2)
         window = RevisionLinkingWindow()
         window.session, window.zone_id = session, 'first'
@@ -143,7 +143,7 @@ class PlayerWidgetTests(unittest.TestCase):
     def test_critical_link_navigation_uses_saved_warnings_and_acknowledges_approval(self):
         missing = np.zeros(100, dtype=int)
         session = RevisionSession({'mode': 'automatic'}, (),
-                                  [RevisionZone('invalid', 70, 79, source='invalid', status='automatic')],
+                                  [ZodAnnotation('invalid', 70, 79, source='invalid', status='automatic')],
                                   missing, missing, 2, link_frames=(9, 19, 29, 39, 49, 59))
         labels = np.array([[1, 0], [0, 2]], dtype=np.uint8)
         jobs = session.jobs
@@ -161,7 +161,7 @@ class PlayerWidgetTests(unittest.TestCase):
         try:
             self.assertFalse(window.link_critical_only.isChecked())
             before, revision = session._state(), session.revision
-            with patch('bivosia.analysis.linking.match_masks', side_effect=AssertionError('Recomputed masks')):
+            with patch('bivosia.analysis.mask_linking.match_masks', side_effect=AssertionError('Recomputed masks')):
                 links = window.link_colors.links(session)
                 self.assertEqual([j.id for j in critical_links(links)], [jobs[i].id for i in (1, 2, 3, 5, 6)])
             self.assertEqual(session._state(), before)
@@ -549,7 +549,7 @@ class PlayerWidgetTests(unittest.TestCase):
     def test_zone_click_selects_and_double_click_focuses_from_timelines_and_list(self):
         window = RevisionLinkingWindow()
         missing = np.zeros(1000, bool)
-        zones = [RevisionZone("a", 100, 180), RevisionZone("b", 500, 600)]
+        zones = [ZodAnnotation("a", 100, 180), ZodAnnotation("b", 500, 600)]
         window.data = SimpleNamespace(count=1000, n=2, quality=np.ones(1000), assigned_iou=np.ones(1000),
                                       missing=missing, missing_forward=missing, missing_reverse=missing,
                                       evidence=SimpleNamespace(switch_frames=missing), measures={}, measure_labels={})

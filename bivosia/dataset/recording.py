@@ -7,25 +7,36 @@ Examples
 >>> recording = Recording(Dataset("experiment"))  # doctest: +SKIP
 >>> mask = recording.mask("forward", 0)  # doctest: +SKIP
 >>> recording.close()  # doctest: +SKIP
+
+>>> from bivosia.dataset.recording import RevisionRecording
+>>> recording = RevisionRecording(Dataset("experiment"))  # doctest: +SKIP
+>>> zones = recording.detect(0.6, 0.9, 0)  # doctest: +SKIP
+>>> recording.close()  # doctest: +SKIP
 """
 
 __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
-from contextlib import closing
 from functools import lru_cache
 
 import numpy as np
 
-from bivosia.dataset.analysis import load_mask_measures, load_quality_evidence
-from bivosia.dataset.arrays import MaskOverlaps, quality_cache_available, read_array
+from bivosia.config import ANALYSIS_DEFAULTS
+from bivosia.analysis.mask_linking import Linker
+from bivosia.analysis.mask_features import mask_centers
+from bivosia.analysis.mask_quality import recording_measures
+from bivosia.analysis.zones_of_disagreement import (
+    detect_zods, detection_parameters, mask_count_seed_signal, prepare_zod_evidence,
+)
+from bivosia.dataset.mask_features import load_mask_measures
+from bivosia.dataset.mask_quality import (
+    load_mask_summary, load_quality_evidence, quality_cache_available, read_quality_array,
+)
+from bivosia.dataset.io.arrays import read_array
 from bivosia.dataset.layout import Dataset
 from bivosia.dataset.keypoints import load_keypoints
-from bivosia.dataset.video import VideoSet
-from bivosia.analysis.zones_of_disagreement import mask_count_seed_signal, prepare_zod_evidence
-from bivosia.analysis.mask_features import missing_mask_counts
-from bivosia.analysis.quality import recording_measures
+from bivosia.dataset.video import RecordingStreams
 
 
 class Recording:
@@ -51,7 +62,7 @@ class Recording:
                 masks[direction] = self.remote_reader.open_masks(direction)
             elif path.is_file() or require_analysis:
                 self.paths[direction] = path
-        self.videos = VideoSet(self.paths, masks=masks)
+        self.videos = RecordingStreams(self.paths, masks=masks)
         if not require_analysis:
             self.videos.frame_count = self.videos.counts['original']
         self.count = self.videos.frame_count
@@ -67,29 +78,25 @@ class Recording:
                 raise ValueError('Masks must match the evidence length')
             if self.mask('forward', 0).shape != self.mask('reverse', 0).shape:
                 raise ValueError('Forward/reverse masks must share image coordinates')
-        self.temporal_quality = self._array(analysis, 'mask_temporal_quality', (2, self.count - 1))
+        self.temporal_quality = read_quality_array(analysis, 'mask_temporal_quality', (2, self.count - 1))
         self.measures = load_mask_measures(self.count, analysis.array('mask_measures'),
                                            analysis.file('mask_measures', companion='metadata'))
         reference = next(iter(self.videos.masks.values()), None)
         self.keypoints = load_keypoints(dataset, masks=reference) if reference is not None else None
-        if self.keypoints is not None and self.keypoints.shape[0] != self.count:
+        if self.keypoints is not None and self.keypoints.reader.shape[0] != self.count:
             raise ValueError('Keypoints must cover the same frame interval as the recording')
 
     def _load_analysis(self, analysis, required):
         matrices = None
         intersections, areas = analysis.array('mask_intersections'), analysis.array('mask_areas')
         if required or (intersections.is_file() and areas.is_file()):
-            with closing(MaskOverlaps(intersections, areas)) as overlaps:
-                count, self.n, _ = overlaps.shape
-                if count != self.count:
-                    raise ValueError('Mask analysis and recording frame counts differ')
-                if required and self.n < 2:
-                    raise ValueError('Assignment quality requires at least two animals')
-                matrices = overlaps.iou()
-                self.missing_forward, self.missing_reverse = missing_mask_counts(overlaps.areas)
+            _, self.n, self.missing_forward, self.missing_reverse, matrices = load_mask_summary(
+                analysis, frame_count=self.count, with_iou=True)
+            if required and self.n < 2:
+                raise ValueError('Assignment quality requires at least two animals')
         match_path = analysis.array('mask_iou_match')
         if match_path.is_file() and quality_cache_available(analysis.analysis_file):
-            self.evidence = load_quality_evidence(analysis.analysis_file, match_path)
+            self.evidence = load_quality_evidence(analysis.analysis_file, match_path, shape=(self.count, self.n))
         elif required:
             assignments = read_array(match_path) if match_path.is_file() else None
             self.evidence = prepare_zod_evidence(matrices, assignments)
@@ -104,18 +111,8 @@ class Recording:
                 self.missing, self.quality, self.assigned_iou = recording_measures(
                     matrices, self.evidence, self.missing_forward > 0, self.missing_reverse > 0, missing)
         else:
-            self.quality = self._array(analysis, 'mask_quality', (self.count,))
-            self.missing = self._array(analysis, 'mask_missing', (self.count,))
-
-    @staticmethod
-    def _array(dataset, name, shape):
-        path = dataset.array(name)
-        if not path.is_file():
-            return None
-        values = read_array(path)
-        if values.shape != shape:
-            raise ValueError(f'{name} and recording dimensions differ')
-        return values
+            self.quality = read_quality_array(analysis, 'mask_quality', (self.count,))
+            self.missing = read_quality_array(analysis, 'mask_missing', (self.count,))
 
     @lru_cache(maxsize=32)
     def mask(self, source, frame):
@@ -128,7 +125,7 @@ class Recording:
         if name is None:
             return self.videos
         if name not in self.streams:
-            self.streams[name] = VideoSet({"original": self.paths["original"]})
+            self.streams[name] = RecordingStreams({"original": self.paths["original"]})
         return self.streams[name]
 
     @lru_cache(maxsize=8)
@@ -152,3 +149,32 @@ class Recording:
             self.videos.close()
         if self.remote_reader is not None:
             self.remote_reader.close()
+
+
+class RevisionRecording(Recording):
+    """A loaded recording with ZoD detection, linking and cached mask centers."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.linking = (Linker(self.mask, self.n, self.quality, self.missing, self.evidence.switch_frames)
+                        if self.evidence is not None and {'forward', 'reverse'} <= self.videos.masks.keys()
+                        else None)
+
+    @lru_cache(maxsize=32)
+    def centers(self, source, frame):
+        return mask_centers(self.mask(source, frame), self.n)
+
+    def detect(self, seed=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_quality'],
+               recover=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_recovery'], gap=ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_gap']):
+        return detect_zods(self.evidence, seed, theta_recovery=recover,
+                           theta_gap=gap, missing_signal=self.missing)
+
+    def header(self, seed, recover, gap, *,
+               direction_method=ANALYSIS_DEFAULTS['zones_of_disagreement']['direction_method']):
+        return detection_parameters(seed, recover, gap, direction_method=direction_method)
+
+    def close(self):
+        self.centers.cache_clear()
+        if getattr(self, "linking", None) is not None:
+            self.linking.clear()
+        super().close()

@@ -17,8 +17,8 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QWidget
 
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.locations import location_for, remember_location
-from bivosia.processing.remote import Remote
+from bivosia.dataset.storage.locations import location_for, remember_location
+from bivosia.processing.remote.client import Remote
 from bivosia.ui.dataset_locations_dialog import DatasetLocationsDialog
 from bivosia.ui.remote_installations_dialog import RemoteInstallationsDialog
 from bivosia.ui.remote_settings import installation_label, remote_settings

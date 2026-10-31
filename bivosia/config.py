@@ -120,85 +120,85 @@ DATA_FORMATS = {
     'masks': {
         'hdf5': {
             'suffixes': ('.h5', '.hdf5', '.hdf'),
-            'reader': ('bivosia.dataset.hdf5_masks', 'Hdf5Masks'),
-            'writer': ('bivosia.dataset.hdf5_masks', 'stage_masks'),
-            'inspector': ('bivosia.dataset.hdf5_io', 'inspect_arrays'),
+            'reader': ('bivosia.dataset.io.hdf5', 'Hdf5MaskReader'),
+            'writer': ('bivosia.dataset.io.hdf5', 'stage_masks'),
+            'inspector': ('bivosia.dataset.io.hdf5', 'inspect_arrays'),
         },
         'npy': {
             'suffixes': ('.npy',),
-            'reader': ('bivosia.dataset.numpy_masks', 'NpyMasks'),
-            'writer': ('bivosia.dataset.numpy_masks', 'stage_npy_masks'),
-            'inspector': ('bivosia.dataset.numpy_io', 'inspect_npy'),
+            'reader': ('bivosia.dataset.io.numpy', 'NpyMaskReader'),
+            'writer': ('bivosia.dataset.io.numpy', 'stage_npy_masks'),
+            'inspector': ('bivosia.dataset.io.numpy', 'inspect_npy'),
             'companions': {'validity': '{stem}.valid.npy'},
         },
         'npz': {
             'suffixes': ('.npz',),
-            'reader': ('bivosia.dataset.numpy_masks', 'NpzMasks'),
-            'writer': ('bivosia.dataset.numpy_masks', 'stage_npz_masks'),
-            'inspector': ('bivosia.dataset.numpy_io', 'inspect_npz'),
+            'reader': ('bivosia.dataset.io.numpy', 'NpzMaskReader'),
+            'writer': ('bivosia.dataset.io.numpy', 'stage_npz_masks'),
+            'inspector': ('bivosia.dataset.io.numpy', 'inspect_npz'),
             'scratch': {'buffer': '{name}.partial.npy'},
         },
     },
     'linked_masks': {
         'hdf5': {
             'suffixes': ('.h5', '.hdf5', '.hdf'),
-            'reader': ('bivosia.dataset.hdf5_masks', 'linked_mask_streams'),
-            'inspector': ('bivosia.dataset.hdf5_io', 'inspect_arrays'),
+            'reader': ('bivosia.dataset.io.hdf5', 'linked_mask_streams'),
+            'inspector': ('bivosia.dataset.io.hdf5', 'inspect_arrays'),
         },
     },
     'keypoints': {
         'sleap': {
             'suffixes': ('.h5', '.hdf5', '.hdf'),
-            'reader': ('bivosia.dataset.sleap', 'SleapPoints'),
-            'inspector': ('bivosia.dataset.hdf5_io', 'inspect_arrays'),
+            'reader': ('bivosia.dataset.io.sleap', 'SleapKeypointReader'),
+            'inspector': ('bivosia.dataset.io.hdf5', 'inspect_arrays'),
         },
     },
     'video': {
         'opencv': {
             'suffixes': ('.mp4', '.avi', '.mov', '.mkv'),
-            'reader': ('bivosia.dataset.opencv_video', 'OpenCvVideo'),
-            'inspector': ('bivosia.dataset.opencv_video', 'inspect_video'),
+            'reader': ('bivosia.dataset.io.opencv', 'OpenCvVideoReader'),
+            'inspector': ('bivosia.dataset.io.opencv', 'inspect_video'),
         },
     },
     'arrays': {
         'npy': {
             'suffixes': ('.npy',),
-            'reader': ('bivosia.dataset.numpy_io', 'read_array'),
-            'writer': ('bivosia.dataset.numpy_io', 'array_output'),
-            'inspector': ('bivosia.dataset.numpy_io', 'inspect_npy'),
+            'reader': ('bivosia.dataset.io.numpy', 'read_array'),
+            'writer': ('bivosia.dataset.io.numpy', 'array_output'),
+            'inspector': ('bivosia.dataset.io.numpy', 'inspect_npy'),
         },
     },
     'documents': {
         'json': {
             'suffixes': ('.json',),
-            'reader': ('bivosia.dataset.jsonio', '_read_json'),
-            'writer': ('bivosia.dataset.jsonio', '_atomic_json'),
+            'reader': ('bivosia.dataset.io.json', '_read_json'),
+            'writer': ('bivosia.dataset.io.json', '_atomic_json'),
             'temporary': {'prefix': '.{name}.', 'suffix': '.tmp'},
         },
     },
     'text': {
         'plain': {
             'suffixes': ('.txt',),
-            'reader': ('bivosia.dataset.text', 'read_text'),
+            'reader': ('bivosia.dataset.io.text', 'read_text'),
             'syntax': 'plain',
         },
         'json': {
             'suffixes': ('.json',),
-            'reader': ('bivosia.dataset.text', 'read_text'),
+            'reader': ('bivosia.dataset.io.text', 'read_text'),
             'syntax': 'json',
         },
         'markdown': {
             'suffixes': ('.md', '.markdown'),
-            'reader': ('bivosia.dataset.text', 'read_text'),
+            'reader': ('bivosia.dataset.io.text', 'read_text'),
             'syntax': 'markdown',
         },
     },
     'containers': {
         'hdf5': {
             'suffixes': ('.h5', '.hdf5', '.hdf'),
-            'reader': ('bivosia.dataset.hdf5_io', 'open_hdf5'),
-            'writer': ('bivosia.dataset.hdf5_io', 'hdf5_output'),
-            'inspector': ('bivosia.dataset.hdf5_io', 'inspect_arrays'),
+            'reader': ('bivosia.dataset.io.hdf5', 'open_hdf5'),
+            'writer': ('bivosia.dataset.io.hdf5', 'hdf5_output'),
+            'inspector': ('bivosia.dataset.io.hdf5', 'inspect_arrays'),
         },
     },
 }
@@ -242,14 +242,14 @@ ANALYSIS_DEFAULTS = {
         'tie_relative_tolerance': 1e-12,
         'tie_absolute_tolerance': 1e-12,
     },
-    'linking': {
+    'mask_linking': {
         'tie_absolute_tolerance': 1e-7,
     },
     'embedding': {
         'n_components': 2,
         'z_score': False,
     },
-    'quality': {
+    'mask_quality': {
         'count_dtype': 'uint32',
         'temporal_intersections': False,
     },
@@ -288,32 +288,36 @@ ANALYSIS_DEFAULTS = {
     },
 }
 
-# Groups follow module names in processing/.
+# Groups follow packages and module names in processing/.
 PROCESSING_DEFAULTS = {
-    'remote_images': {
-        'timeout_seconds': 300,
+    'remote': {
+        'session': {
+            'timeout_seconds': 300,
+        },
     },
-    'quantify': {
-        'workers': None,
-        'overlap_batch_size': 512,
-        'quality_batch_size': 16384,
-    },
-    'features': {
-        'workers': None,
-        'batch_size': 256
-    },
-    'alignment': {
-        'workers': 1,
-        'block_size': 512
-    },
-    'keypoints': {
-        'block_size': 16384
-    },
-    'shape_features': {
-        'block_size': 32,
-        'start_frame': 0,
-        'end_frame': -1,
-        'frame_step': 1,
+    'analysis': {
+        'mask_quality': {
+            'workers': None,
+            'overlap_batch_size': 512,
+            'quality_batch_size': 16384,
+        },
+        'mask_features': {
+            'workers': None,
+            'batch_size': 256
+        },
+        'alignment': {
+            'workers': 1,
+            'block_size': 512
+        },
+        'keypoints': {
+            'block_size': 16384
+        },
+        'mask_shape': {
+            'block_size': 32,
+            'start_frame': 0,
+            'end_frame': -1,
+            'frame_step': 1,
+        },
     },
     'jobs': {
         'heartbeat_seconds': 5,
@@ -426,5 +430,4 @@ DATASET_LAYOUT = {
 FILE_PATTERNS = {
     "partial": "{name}.partial",
     "lock": "{name}.lock",
-    "download": "{name}.download",
 }

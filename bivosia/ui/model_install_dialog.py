@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout,
                                QLabel, QPlainTextEdit, QPushButton, QVBoxLayout)
 
 from bivosia.config import MODEL_INSTALLATIONS
-from bivosia.processing.model_install import install_local
+from bivosia.processing.segmentation.model_install import install_local
 from bivosia.ui.task import Task
 
 

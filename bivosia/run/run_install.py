@@ -2,7 +2,7 @@
 
 Examples
 --------
->>> from bivosia.processing.model_install import installation
+>>> from bivosia.processing.segmentation.model_install import installation
 >>> installation('cutie')['source'].name
 'Cutie'
 """
@@ -22,7 +22,7 @@ if __package__ in (None, ''):
 
 from bivosia.config import MODEL_INSTALLATIONS
 from bivosia.processing.log import configure_logging
-from bivosia.processing.model_install import install_model
+from bivosia.processing.segmentation.model_install import install_model
 
 
 def execute(model, *, json_output=False):

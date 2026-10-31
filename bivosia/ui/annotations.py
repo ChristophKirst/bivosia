@@ -11,7 +11,9 @@ import numpy as np
 from bivosia.analysis.zones_of_disagreement import frame_event_signals, zone_frame_summary
 
 @dataclass(frozen=True)
-class Zone:
+class ZodView:
+    """A ZoD's display frames, labels and directional warning flags."""
+
     name: str
     frames: tuple[int, ...]
     details: str = ""
@@ -34,18 +36,18 @@ def revision_zone(zone):
     details = (f'Valid F: {valid_label(zone.forward_valid)}, R: {valid_label(zone.reverse_valid)} · '
                f'Preferred: {preferred.lower()} · '
                f'Swaps F: {zone.forward_swap or 0}, R: {zone.reverse_swap or 0}')
-    return Zone(zone.id, tuple(range(zone.start, zone.end + 1)), details=details,
+    return ZodView(zone.id, tuple(range(zone.start, zone.end + 1)), details=details,
                 preferred_pass=preferred, forward_valid=zone.forward_valid, reverse_valid=zone.reverse_valid,
                 swap_in_forward=(zone.forward_swap or 0) > 0,
                 swap_in_reverse=(zone.reverse_swap or 0) > 0)
 
 
 def annotate_zone_missing(
-    zones: list[Zone], missing_signal: np.ndarray | None,
+    zones: list[ZodView], missing_signal: np.ndarray | None,
     forward_missing_signal: np.ndarray | None = None,
     reverse_missing_signal: np.ndarray | None = None,
     missing_direction_known: np.ndarray | None = None,
-) -> list[Zone]:
+) -> list[ZodView]:
     """Attach shared analysis summaries to annotation display records."""
     if missing_signal is None:
         return zones

@@ -19,7 +19,7 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from bivosia.dataset.jobs import Job
+from bivosia.dataset.workflow.jobs import Job
 from bivosia.dataset.layout import Dataset
 from bivosia.processing.jobs import run
 

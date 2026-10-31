@@ -59,10 +59,10 @@ from bivosia.config import ANALYSIS_DEFAULTS
 from bivosia.analysis.zones_of_disagreement import (
     detect_zods, frame_event_signals, mask_count_seed_signal, zone_frame_summary,
 )
-from bivosia.analysis.linking import Linker
-from bivosia.dataset.video import VideoSet
-from bivosia.processing.keypoints import calculate_keypoint_counts
-from bivosia.ui.annotations import Zone, annotate_zone_missing
+from bivosia.analysis.mask_linking import Linker
+from bivosia.dataset.video import RecordingStreams
+from bivosia.processing.analysis.keypoints import calculate_keypoint_counts
+from bivosia.ui.annotations import ZodView, annotate_zone_missing
 from bivosia.ui.colors import bgr_colors
 from bivosia.ui.dock_panel import PanelSplitter, PanelHost, DockPanel, add_view_menu
 from bivosia.ui.legend_panel import LegendPanel
@@ -110,7 +110,7 @@ class ZoneVideoViewer(QMainWindow):
     quality_higher_is_better = QUALITY_METRIC_HIGHER_IS_BETTER
 
     def __init__(
-        self, paths: dict[str, Path], zones: list[Zone], *,
+        self, paths: dict[str, Path], zones: list[ZodView], *,
         expected_masks: int | None = None, evidence: ZodEvidence | None = None,
         quality_arrays=None, feature_data=None, feature_labels=None, sparse_features=None,
         missing_signal=None, forward_missing_signal=None, reverse_missing_signal=None,
@@ -119,11 +119,11 @@ class ZoneVideoViewer(QMainWindow):
         annotation_label='Hand', controls=None,
     ) -> None:
         super().__init__()
-        self.videos = videos if videos is not None else VideoSet(paths)
+        self.videos = videos if videos is not None else RecordingStreams(paths)
         self.keypoints = keypoints
         self.alignment_tracks = (
             keypoint_alignment_tracks(keypoints, global_links, point_counts=calculate_keypoint_counts(
-                keypoints, node_ids=keypoints.selected_node_ids))
+                keypoints.reader, node_ids=keypoints.selected_node_ids))
             if keypoints is not None and keypoints.alignment is not None and global_links is not None else {}
         )
         self.zones = list(zones)
@@ -855,7 +855,7 @@ class ZoneVideoViewer(QMainWindow):
 
     @staticmethod
     def _zone_table_values(
-        index: int, zone: Zone, minimum_quality: float | None,
+        index: int, zone: ZodView, minimum_quality: float | None,
         has_switch: bool,
     ) -> tuple[str, int, int, int, str, str, str]:
         label = (
@@ -878,7 +878,7 @@ class ZoneVideoViewer(QMainWindow):
         )
 
     @property
-    def zone(self) -> Zone | None:
+    def zone(self) -> ZodView | None:
         index = self._zone_index_at_row(self.zone_table.currentRow())
         return self.zones[0 if index is None else index] if self.zones else None
 

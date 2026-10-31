@@ -1,4 +1,4 @@
-"""Launch, monitor and cancel independent processing jobs.
+"""Validate, launch, monitor and cancel independent processing jobs.
 
 Examples
 --------
@@ -26,29 +26,29 @@ import threading
 import time
 
 from bivosia.config import JOB_TERMINAL_STATES, PROCESSING_DEFAULTS
-from bivosia.dataset.jobs import Job, list_jobs
+from bivosia.dataset.workflow.jobs import Job, list_jobs
 from bivosia.processing.log import configure_logging
 
 
 def operation(name):
     """Resolve supported processing operations without importing model packages."""
     if name == 'vos':
-        from bivosia.processing.segmentation import segment
+        from bivosia.processing.segmentation.vos import segment
         return segment
     if name == 'quantify':
-        from bivosia.processing.quantify import quantify_job
+        from bivosia.processing.analysis.mask_quality import quantify_job
         return quantify_job
     if name == 'shape_features':
-        from bivosia.processing.shape_features import shape_features_job
+        from bivosia.processing.analysis.mask_shape import shape_features_job
         return shape_features_job
     if name == 'align':
-        from bivosia.processing.alignment import alignment_job
+        from bivosia.processing.analysis.alignment import alignment_job
         return alignment_job
     if name == 'detect_link':
-        from bivosia.processing.zod_detection import detect_link_job
+        from bivosia.processing.analysis.zones_of_disagreement import detect_link_job
         return detect_link_job
     if name == 'export':
-        from bivosia.processing.export import export_job
+        from bivosia.processing.analysis.mask_export import export_job
         return export_job
     if name == 'workflow':
         from bivosia.processing.workflow import workflow_job
@@ -61,6 +61,38 @@ def require_idle(dataset):
     if any(Job(dataset, name).status['state'] not in JOB_TERMINAL_STATES
            for name in list_jobs(dataset)):
         raise ValueError('Finish or cancel the active dataset job before starting another calculation.')
+
+
+def check_inputs(dataset, operation, settings):
+    """Check required data and existing outputs at the selected execution location."""
+    from bivosia.dataset.workflow.processing import processing_inputs
+    from bivosia.dataset.workflow.status import inspect_outputs
+
+    require_idle(dataset)
+    try:
+        if not dataset.description.is_file():
+            raise FileNotFoundError('Dataset description is missing')
+        if operation in ('align', 'shape_features') and dataset.annotation is None:
+            raise FileNotFoundError('Selected annotation is missing')
+        if operation == 'vos':
+            for path in (dataset.video, dataset.file('key_frames'), dataset.file('key_frame_masks')):
+                if not path.is_file():
+                    raise FileNotFoundError(f'Required input is missing: {path}')
+            from bivosia.processing.segmentation.vos import check
+            check(dataset, **settings)
+        else:
+            processing_inputs(dataset, operation, settings)
+    except FileNotFoundError as error:
+        return {'missing': True, 'message': str(error)}
+    except ValueError as error:
+        if str(error).startswith('Set video in'):
+            return {'missing': True, 'message': str(error)}
+        raise
+    replaces_analysis = operation == 'quantify' or (operation == 'workflow' and any(
+        step['operation'] == 'quantify' for step in settings['steps']))
+    existing = (any(entry['exists'] for entry in inspect_outputs(dataset)['analysis'].values())
+                if replaces_analysis else False)
+    return {'missing': False, 'replace_analysis': existing}
 
 
 def _launch_worker(job, command, persistent):

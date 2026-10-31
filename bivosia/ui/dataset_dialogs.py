@@ -14,7 +14,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 
 from PySide6.QtWidgets import QDialog, QFileDialog
 
-from bivosia.dataset.formats import format_suffixes
+from bivosia.dataset.io.registry import format_suffixes
 from bivosia.dataset.setup import create_dataset, select_video
 from bivosia.ui.keypoint_import_dialog import KeypointImportDialog
 from bivosia.ui.window_manager import notify_dataset_changed

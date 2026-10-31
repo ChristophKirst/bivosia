@@ -8,7 +8,7 @@ from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QTextCursor
 
 from bivosia.config import JOB_TERMINAL_STATES
-from bivosia.dataset.jobs import Job, list_jobs
+from bivosia.dataset.workflow.jobs import Job, list_jobs
 from bivosia.processing.jobs import inspect
 from bivosia.ui.processing_output import ProcessingOutput
 from bivosia.ui.task import Task

@@ -13,7 +13,7 @@ from PySide6.QtGui import QImage
 from bivosia.config import ANALYSIS_DEFAULTS
 from bivosia.analysis.masks import preprocessing_settings
 from bivosia.analysis.mask_features import prepare_shape_mask
-from bivosia.dataset.shape_features import sample_masks
+from bivosia.dataset.mask_features import sample_masks
 
 
 def mask_images(dataset, frames, identities, colors, settings, source, cancelled):

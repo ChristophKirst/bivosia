@@ -14,16 +14,16 @@ import numpy as np
 from bivosia.ui.link_colors import LinkColors, current_link_labels, global_labels, global_label_colors
 from bivosia.ui.colors import bgr_colors, component_colors, MASK_COLORS_BGR
 from bivosia.ui.keypoints import overlay_keypoints
-from bivosia.processing.revision import RevisionData
-from bivosia.dataset.session import RevisionSession
-from bivosia.analysis.linking import Match, automatic_link, initial_draft, match_masks, prepare_links
-from bivosia.analysis.zones_of_disagreement import RevisionZone
+from bivosia.dataset.recording import RevisionRecording
+from bivosia.dataset.annotations.masks import RevisionSession
+from bivosia.analysis.mask_linking import MaskMatchResult, automatic_link, initial_draft, match_masks, prepare_links
+from bivosia.analysis.zones_of_disagreement import ZodAnnotation
 
 
 class LinkColorTests(unittest.TestCase):
     def session(self, zones=None):
         return RevisionSession({}, (),
-                               [RevisionZone("a", 10, 19), RevisionZone("b", 30, 39)] if zones is None else zones,
+                               [ZodAnnotation("a", 10, 19), ZodAnnotation("b", 30, 39)] if zones is None else zones,
                                np.zeros(50, bool), np.zeros(50, bool), 2)
 
     def approve(self, session, job, mapping):
@@ -61,7 +61,7 @@ class LinkColorTests(unittest.TestCase):
         job = session.jobs[0]
         self.approve(session, job, (1, 0))
         before = deepcopy(session.__dict__)
-        default = Mock(return_value=Match((0, 1), (), .8))
+        default = Mock(return_value=MaskMatchResult((0, 1), (), .8))
         links = prepare_links(session, default)
         preview = links.resolve()
         self.assertEqual(default.call_count, len(session.jobs) - 1)
@@ -79,7 +79,7 @@ class LinkColorTests(unittest.TestCase):
     def test_ambiguous_endpoint_stays_separate_until_reviewed(self):
         session = self.session()
         job = session.jobs[0]
-        default = lambda boundary: Match((0, 1), ('Tied assignments',) if boundary == job else (), .8)
+        default = lambda boundary: MaskMatchResult((0, 1), ('Tied assignments',) if boundary == job else (), .8)
         links = prepare_links(session, default)
         self.assertEqual(links.resolve().regions, ((0, 9, 0), (10, 49, 1)))
         live = links.resolve(session.jobs[0].id, (1, 0))
@@ -92,12 +92,12 @@ class LinkColorTests(unittest.TestCase):
         session = self.session()
         session.missing_forward[12] = True
         session.missing_reverse[16] = True
-        preview = prepare_links(session, lambda job: Match((0, 1), (), .8)).resolve()
+        preview = prepare_links(session, lambda job: MaskMatchResult((0, 1), (), .8)).resolve()
         self.assertEqual(preview.regions, ((0, 49, 0),))
 
     def test_invalid_bridge_has_no_default_and_no_colored_invalid_frames(self):
-        session = self.session([RevisionZone("bad", 10, 19, "invalid")])
-        default = Mock(return_value=Match((0, 1), (), .8))
+        session = self.session([ZodAnnotation("bad", 10, 19, "invalid")])
+        default = Mock(return_value=MaskMatchResult((0, 1), (), .8))
         links = prepare_links(session, default)
         default.assert_not_called()
         self.assertEqual(links.resolve().regions, ((0, 9, 0), (20, 49, 1)))
@@ -107,7 +107,7 @@ class LinkColorTests(unittest.TestCase):
         session = self.session()
         job = session.jobs[0]
         session.set_draft(job.id, {**initial_draft(job), "mapping": [1, 0], "manual": True})
-        default = Mock(return_value=Match((0, 1), (), .8))
+        default = Mock(return_value=MaskMatchResult((0, 1), (), .8))
         preview = prepare_links(session, default).resolve()
         self.assertNotIn(job.id, preview.automatic)
         self.assertEqual(default.call_count, len(session.jobs) - 1)
@@ -129,11 +129,11 @@ class LinkColorTests(unittest.TestCase):
 
     def test_source_alignment_and_preview_cache_track_live_mapping(self):
         session = self.session()
-        data = object.__new__(RevisionData)
+        data = object.__new__(RevisionRecording)
         data.n, data.count = 2, 50
         data.evidence = SimpleNamespace(switch_frames=np.zeros(50, bool))
         data.linking = SimpleNamespace(n=2)
-        data.linking.boundary_match = Mock(return_value=Match((0, 1), (), .8))
+        data.linking.boundary_match = Mock(return_value=MaskMatchResult((0, 1), (), .8))
         data.linking.canonical_mapping = Mock(side_effect=lambda job, draft, seed: (draft["mapping"], []))
         data.linking.conversion = Mock(return_value=((1, 0), []))
         colors = LinkColors(data)
@@ -154,7 +154,7 @@ class LinkColorTests(unittest.TestCase):
     def test_masks_and_assigned_points_share_global_colors(self):
         session = self.session()
         self.approve(session, session.jobs[0], (1, 0))
-        preview = prepare_links(session, lambda job: Match((0, 1), (), .8)).resolve()
+        preview = prepare_links(session, lambda job: MaskMatchResult((0, 1), (), .8)).resolve()
         linker = SimpleNamespace(n=2, conversion=Mock(return_value=((0, 1), [])))
         colors = bgr_colors(global_label_colors(linker, preview, 'forward', 12, .6))
         np.testing.assert_array_equal(colors, bgr_colors(component_colors(2, 0))[::-1])

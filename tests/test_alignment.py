@@ -16,15 +16,15 @@ from bivosia.analysis.alignment import (
     align_scores, align_points_to_masks, point_mask_scores, point_mask_overlaps, point_overlap_scores,
 )
 from bivosia.analysis.keypoints import keypoint_identity_events
-from bivosia.analysis.zones_of_disagreement import RevisionZone
+from bivosia.analysis.zones_of_disagreement import ZodAnnotation
 from bivosia.dataset.keypoints import load_keypoints
-from bivosia.dataset.frame_data import PointData
+from bivosia.dataset.io.interfaces import KeypointReader
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.mask_output import write_masks
-from bivosia.processing.alignment import calculate_keypoint_alignment
+from bivosia.dataset.masks import write_masks
+from bivosia.processing.analysis.alignment import calculate_keypoint_alignment
 
 
-class ArrayPoints(PointData):
+class ArrayPoints(KeypointReader):
     """A serializable non-SLEAP reader used to exercise generic processing."""
 
     def __init__(self):
@@ -81,7 +81,9 @@ class AlignmentTests(unittest.TestCase):
                 self.assertEqual(loaded.excluded_keypoints, excluded)
                 self.assertEqual(loaded.selected_node_ids, [0] if excluded else [0, 1, 2])
                 np.testing.assert_allclose(loaded.scores, scores)
-                np.testing.assert_equal(loaded[:], points)
+                np.testing.assert_equal(loaded.reader[:], points)
+                self.assertFalse(hasattr(loaded.reader, 'alignment'))
+                self.assertFalse(hasattr(loaded.reader, 'excluded_keypoints'))
                 path = dataset.array('keypoint_alignment')
                 with h5py.File(path, 'r') as file:
                     self.assertEqual(json.loads(file.attrs['excluded_keypoints']), list(excluded))
@@ -117,9 +119,9 @@ class AlignmentTests(unittest.TestCase):
         present[8] = False
         present[9, 1] = False
         links = SimpleNamespace(
-            partition=(RevisionZone('a', 0, 0, 'forward'), RevisionZone('b', 1, 4, 'reverse'),
-                       RevisionZone('c', 5, 7, 'reverse'), RevisionZone('bad', 8, 8, 'invalid'),
-                       RevisionZone('d', 9, 12, 'reverse')),
+            partition=(ZodAnnotation('a', 0, 0, 'forward'), ZodAnnotation('b', 1, 4, 'reverse'),
+                       ZodAnnotation('c', 5, 7, 'reverse'), ZodAnnotation('bad', 8, 8, 'invalid'),
+                       ZodAnnotation('d', 9, 12, 'reverse')),
             maps={'a': (0, 1), 'b': (1, 0), 'c': (0, 1), 'd': (0, 1)},
             components={'a': 0, 'b': 0, 'c': 1, 'd': 2}, errors=())
         counts = np.full((13, 3), 11)
@@ -147,8 +149,8 @@ class AlignmentTests(unittest.TestCase):
         valid = np.array(states) != -2
         present = np.repeat(valid[:, None], 2, axis=1)
         links = SimpleNamespace(
-            partition=(RevisionZone('a', 0, 4), RevisionZone('bad', 5, 5, 'invalid'),
-                       RevisionZone('b', 6, 11)),
+            partition=(ZodAnnotation('a', 0, 4), ZodAnnotation('bad', 5, 5, 'invalid'),
+                       ZodAnnotation('b', 6, 11)),
             maps={'a': (0, 1), 'b': (0, 1)}, components={'a': 0, 'b': 0}, errors=())
         counts = np.ones((12, 2), dtype=int)
         counts[9, 1] = 0
@@ -169,8 +171,8 @@ class AlignmentTests(unittest.TestCase):
         valid = np.ones(len(scores), bool)
         valid[5] = False
         links = SimpleNamespace(
-            partition=(RevisionZone('a', 0, 4), RevisionZone('bad', 5, 5, 'invalid'),
-                       RevisionZone('b', 6, 10)),
+            partition=(ZodAnnotation('a', 0, 4), ZodAnnotation('bad', 5, 5, 'invalid'),
+                       ZodAnnotation('b', 6, 10)),
             maps={'a': (0, 1), 'b': (0, 1)}, components={'a': 0, 'b': 0}, errors=())
         events = keypoint_identity_events(align_scores(scores, valid), np.where(valid, 0, 2),
             scores, np.repeat(valid[:, None], 2, axis=1), links,
@@ -194,7 +196,7 @@ class AlignmentTests(unittest.TestCase):
             [[0, 2, 0], [2, 0, 0], [0, 0, 0]],
         ], dtype=float)
         valid = np.ones(len(scores), bool)
-        links = SimpleNamespace(partition=(RevisionZone('a', 0, 4), RevisionZone('b', 5, 6)),
+        links = SimpleNamespace(partition=(ZodAnnotation('a', 0, 4), ZodAnnotation('b', 5, 6)),
             maps={'a': (0, 1, 2), 'b': (0, 1, 2)}, components={'a': 0, 'b': 1}, errors=())
         result = align_scores(scores, valid, fallback_previous=True)
         before = result.assignment.copy()

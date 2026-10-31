@@ -6,8 +6,8 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 
 import logging
 
-from bivosia.dataset.remote_reader import RemoteDatasetReader
-from bivosia.processing.remote_inventory import inspect_locations
+from bivosia.dataset.storage.remote_reader import RemoteDatasetReader
+from bivosia.dataset.workflow.status import inspect_locations
 from bivosia.ui.remote_settings import remote_settings
 
 

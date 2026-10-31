@@ -29,7 +29,7 @@ import logging
 import numpy as np
 
 from bivosia.segmentation.device import resolve_device
-from bivosia.segmentation.vos import VideoSegmenter
+from bivosia.segmentation.video import VideoSegmenter
 
 
 class CutieSegmenter(VideoSegmenter):

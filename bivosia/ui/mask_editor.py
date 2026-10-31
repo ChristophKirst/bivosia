@@ -16,9 +16,8 @@ from PySide6.QtWidgets import (
 from bivosia.analysis.keyframes import accept_masks, combine_masks, edited_predictions
 from bivosia.analysis.masks import clean_label_mask
 from bivosia.config import ANALYSIS_DEFAULTS
-from bivosia.dataset.key_frames import MaskDraft
-from bivosia.dataset.mask_cleanup import save_cleaned_key_frame
-from bivosia.processing.key_frames import predict_key_frames
+from bivosia.dataset.annotations.keyframes import MaskDraft, save_cleaned_key_frame
+from bivosia.processing.segmentation.keyframes import predict_key_frames
 from bivosia.ui.colors import bgr_colors, identity_colors
 from bivosia.ui.icons import action_icon
 from bivosia.ui.mask_canvas import MaskCanvas

@@ -78,7 +78,7 @@ def step_availability(available, selected, *, settings=None):
 
 
 def workflow_job(dataset, *, steps, progress=None, cancelled=None):
-    from bivosia.dataset.analysis_inputs import processing_inputs
+    from bivosia.dataset.workflow.processing import processing_inputs
     results = []
     validate_step_settings(steps)
     for index, step in enumerate(ordered_steps(steps)):

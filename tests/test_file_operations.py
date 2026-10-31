@@ -13,16 +13,16 @@ import sys
 import unittest
 
 from bivosia.config import PACKAGE_DIRECTORY
-from bivosia.dataset.file_operations import FileDestination, delete_file, file_state
-from bivosia.dataset.inventory import scan_dataset
-from bivosia.dataset.jobs import Job
+from bivosia.dataset.storage.file_operations import FileDestination, delete_file, file_state
+from bivosia.dataset.storage.inventory import scan_dataset
+from bivosia.dataset.workflow.jobs import Job
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.locations import save_locations
+from bivosia.dataset.storage.locations import save_locations
 from bivosia.dataset.paths import folder_path
-from bivosia.processing.file_operations import delete_selected_file, move_selected_file
-from bivosia.processing.folder_operations import (completed_job_entries, delete_folder_entries, folder_entries,
+from bivosia.processing.storage.file_operations import delete_selected_file, move_selected_file
+from bivosia.processing.storage.folder_operations import (completed_job_entries, delete_folder_entries, folder_entries,
                                                  plan_folder_transfer, transfer_folder)
-from bivosia.processing.remote import BOOTSTRAP, Remote
+from bivosia.processing.remote.client import BOOTSTRAP, Remote
 
 
 class LocalTransport(Remote):
@@ -53,7 +53,7 @@ class FileOperationTests(unittest.TestCase):
                             if entry.relative == Path('experiment/notes.bin')), host=host)
 
     def test_consolidation_resolves_remote_conflict_without_changing_source(self):
-        from bivosia.processing.consolidation import plan_consolidation, consolidate
+        from bivosia.processing.storage.consolidation import plan_consolidation, consolidate
         job = Job.create(self.dataset, 'quantify', {})
         job.update(state='complete')
         self.remote.mkdir()
@@ -61,8 +61,8 @@ class FileOperationTests(unittest.TestCase):
         target.parent.mkdir()
         target.write_bytes(b'conflicting destination')
         location = {'host': 'server', 'path': str(self.remote)}
-        with patch('bivosia.processing.file_operations.Remote', LocalTransport), patch(
-                'bivosia.processing.remote_inventory.Remote', LocalTransport):
+        with patch('bivosia.processing.storage.file_operations.Remote', LocalTransport), patch(
+                'bivosia.dataset.storage.inventory.Remote', LocalTransport):
             plan = plan_consolidation(self.dataset, location, self.profiles)
             self.assertFalse(any(Path(name).is_relative_to(folder_path('jobs')) for name in plan.files))
             name = self.path.relative_to(self.dataset.directory).as_posix()
@@ -122,7 +122,7 @@ class FileOperationTests(unittest.TestCase):
         self.assertFalse(self.path.parent.exists())
         self.assertEqual((outside / 'keep.txt').read_text(), 'keep')
 
-    @patch('bivosia.processing.file_operations.Remote', LocalTransport)
+    @patch('bivosia.processing.storage.file_operations.Remote', LocalTransport)
     def test_job_folders_stay_in_place_and_deletion_is_batched(self):
         job = Job.create(self.dataset, 'quantify', {})
         entries = folder_entries(scan_dataset(self.dataset), folder_path('jobs'))
@@ -147,7 +147,7 @@ class FileOperationTests(unittest.TestCase):
         self.assertFalse(remote_job.directory.exists())
         self.assertTrue(self.path.exists())
 
-    @patch('bivosia.processing.file_operations.Remote', LocalTransport)
+    @patch('bivosia.processing.storage.file_operations.Remote', LocalTransport)
     def test_folder_move_preserves_empty_subfolders_over_ssh(self):
         (self.path.parent / 'empty').mkdir()
         entries = folder_entries(scan_dataset(self.dataset), 'experiment')
@@ -158,7 +158,7 @@ class FileOperationTests(unittest.TestCase):
         self.assertEqual((self.remote / 'experiment' / 'notes.bin').read_bytes(), self.content)
         self.assertTrue((self.remote / 'experiment' / 'empty').is_dir())
 
-    @patch('bivosia.processing.file_operations.Remote', LocalTransport)
+    @patch('bivosia.processing.storage.file_operations.Remote', LocalTransport)
     def test_cleanup_selects_only_completed_jobs_across_locations(self):
         done = Job.create(self.dataset, 'quantify', {})
         done.update(state='complete')
@@ -240,7 +240,7 @@ class FileOperationTests(unittest.TestCase):
         self.assertEqual(current.video.read_bytes(), b'recording')
         self.assertFalse(video.exists())
 
-    @patch('bivosia.processing.file_operations.Remote', LocalTransport)
+    @patch('bivosia.processing.storage.file_operations.Remote', LocalTransport)
     def test_ssh_upload_download_and_delete_use_selected_paths(self):
         entry = self.entry()
         move_selected_file(self.dataset, entry, {'host': 'server', 'path': str(self.remote)}, self.profiles)
@@ -257,7 +257,7 @@ class FileOperationTests(unittest.TestCase):
         self.assertFalse(target.exists())
         self.assertEqual(self.path.read_bytes(), self.content)
 
-    @patch('bivosia.processing.file_operations.Remote', LocalTransport)
+    @patch('bivosia.processing.storage.file_operations.Remote', LocalTransport)
     def test_remote_conflict_keeps_both_original_files(self):
         entry = self.entry()
         target = self.remote / entry.relative
@@ -268,7 +268,7 @@ class FileOperationTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), self.content)
         self.assertEqual(target.read_bytes(), b'remote annotations')
 
-    @patch('bivosia.processing.file_operations.Remote', LocalTransport)
+    @patch('bivosia.processing.storage.file_operations.Remote', LocalTransport)
     def test_remote_to_remote_and_same_host_storage_moves(self):
         target = self.remote / 'experiment' / 'notes.bin'
         target.parent.mkdir(parents=True)

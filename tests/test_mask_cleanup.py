@@ -15,10 +15,9 @@ from PySide6.QtWidgets import QApplication
 
 from bivosia.analysis.masks import clean_label_mask
 from bivosia.config import ANALYSIS_DEFAULTS, DATASET_LAYOUT
-from bivosia.dataset.containers import open_container
-from bivosia.dataset.key_frames import KeyFrameSession, MaskDraft
+from bivosia.dataset.io.containers import open_container
+from bivosia.dataset.annotations.keyframes import KeyFrameSession, MaskDraft, save_cleaned_key_frame
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.mask_cleanup import save_cleaned_key_frame
 from bivosia.ui.mask_editor import MaskEditor
 from bivosia.ui.mask_cleanup_dialog import MaskCleanupDialog
 

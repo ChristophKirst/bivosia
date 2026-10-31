@@ -48,7 +48,7 @@ from bivosia.analysis.mask_features import mask_areas
 
 
 @dataclass(frozen=True)
-class Alignment:
+class AlignmentResult:
     """Assignments and frame flags, retaining ties after temporal fallback.
 
     ``assignment[t, a]`` is the zero-based mask index for point track a,
@@ -177,7 +177,7 @@ def align_scores(scores, valid_frames, *, fallback_previous=ANALYSIS_DEFAULTS['a
     tied = np.zeros(len(valid), dtype=bool)
     for t, labels, tie in iter_align_scores(scores, valid, fallback_previous=fallback_previous):
         assignment[t], tied[t] = labels, tie
-    return Alignment(assignment, valid, tied)
+    return AlignmentResult(assignment, valid, tied)
 
 
 def iter_align_scores(scores, valid_frames, *, fallback_previous=ANALYSIS_DEFAULTS['alignment']['fallback_previous']):
@@ -318,7 +318,7 @@ def align_points_to_masks(points, masks, n_masks, *, mask_valid,
     Track slots and mask labels must refer to consistent identities across
     frames for previous-assignment fallback to be meaningful.
 
-    Return an Alignment with zero-based mask indices (-1 for unmatched),
+    Return an AlignmentResult with zero-based mask indices (-1 for unmatched),
     combined frame validity and tie flags that persist after fallback. Data
     must already share frame indices; the function estimates no time offset.
     """

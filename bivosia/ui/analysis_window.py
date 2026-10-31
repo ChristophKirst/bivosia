@@ -19,18 +19,18 @@ from PySide6.QtWidgets import (QComboBox, QFormLayout, QHBoxLayout,
                                QLabel,
                                QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
-from bivosia.dataset.analysis_inputs import analysis_inputs
+from bivosia.dataset.workflow.processing import analysis_inputs
 from bivosia.dataset.layout import Dataset
 from bivosia.ui.processing_request import ProcessingRequest
 from bivosia.ui.icons import action_icon
 from bivosia.ui.dock_panel import PanelHost, PanelSplitter
 from bivosia.ui.processing_panel import ProcessingPanel
-from bivosia.dataset.array_transport import unpack_arrays
+from bivosia.dataset.io.transport import unpack_arrays
 from bivosia.ui.analysis_parameters import AnalysisParameters
 from bivosia.ui.task import Task
-from bivosia.dataset.locations import remote_locations
-from bivosia.dataset.jsonio import read_json
-from bivosia.processing.remote import Remote
+from bivosia.dataset.storage.locations import remote_locations
+from bivosia.dataset.io.json import read_json
+from bivosia.processing.remote.client import Remote
 from bivosia.ui.dataset_access import location_preferences
 from bivosia.ui.window_manager import notify_dataset_changed
 

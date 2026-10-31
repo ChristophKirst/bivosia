@@ -17,8 +17,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget)
 
-from bivosia.processing.remote import Remote
-from bivosia.dataset.locations import remote_path
+from bivosia.processing.remote.client import Remote
+from bivosia.dataset.storage.locations import remote_path
 from bivosia.ui.remote_settings import installation_label, remote_settings
 from bivosia.ui.task import Task
 

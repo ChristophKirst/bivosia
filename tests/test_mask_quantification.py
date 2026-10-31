@@ -14,11 +14,11 @@ import h5py
 import numpy as np
 
 from bivosia.analysis.zones_of_disagreement import prepare_zod_evidence
-from bivosia.analysis.quality import frame_quality_measures, iou_from_intersections, optimal_assignments
-from bivosia.dataset.analysis import load_quality_evidence
-from bivosia.dataset.arrays import MaskOverlaps, quality_cache_available, read_array
+from bivosia.analysis.mask_quality import frame_quality_measures, iou_from_intersections, optimal_assignments
+from bivosia.dataset.mask_quality import load_quality_evidence, MaskOverlapReader, quality_cache_available
+from bivosia.dataset.io.arrays import read_array
 from bivosia.dataset.layout import Dataset
-from bivosia.processing.quantify import calculate_mask_overlaps, calculate_quality_measures, quantify_many
+from bivosia.processing.analysis.mask_quality import calculate_mask_overlaps, calculate_quality_measures, quantify_many
 
 
 def write_masks(dataset, forward, reverse):
@@ -67,7 +67,7 @@ class MaskQuantificationTests(unittest.TestCase):
                     np.testing.assert_array_equal(quality[direction], expected_quality)
                 for name in ("mask_areas", "mask_intersections", "mask_temporal_intersections"):
                     self.assertEqual(read_array(dataset.array(name)).dtype, np.dtype("uint32"))
-                with closing(MaskOverlaps(dataset.array("mask_intersections"), dataset.array("mask_areas"))) as counts:
+                with closing(MaskOverlapReader(dataset.array("mask_intersections"), dataset.array("mask_areas"))) as counts:
                     self.assertIsInstance(counts.intersections, np.memmap)
                     np.testing.assert_array_equal(counts.intersections, expected)
                     expected_iou = iou_from_intersections(expected, *areas)
@@ -107,7 +107,7 @@ class MaskQuantificationTests(unittest.TestCase):
         intersection = np.array([[2_000_000_000]], dtype=np.uint32)
         area = np.array([3_000_000_000], dtype=np.uint32)
         np.testing.assert_array_equal(iou_from_intersections(intersection, area, area), [[0.5]])
-        with patch("bivosia.processing.quantify.mask_shape", return_value=(1, 65536, 65536)):
+        with patch("bivosia.processing.analysis.mask_quality.mask_shape", return_value=(1, 65536, 65536)):
             with self.assertRaisesRegex(ValueError, "uint32 capacity"):
                 calculate_mask_overlaps("forward.h5", "reverse.h5", "counts.npy", 2)
 

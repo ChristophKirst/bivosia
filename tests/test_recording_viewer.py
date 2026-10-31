@@ -19,12 +19,12 @@ import h5py
 import numpy as np
 
 from bivosia.analysis.zones_of_disagreement import detection_parameters
-from bivosia.analysis.linking import automatic_link, initial_draft, prepare_links
+from bivosia.analysis.mask_linking import automatic_link, initial_draft, prepare_links
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.jsonio import read_json
-from bivosia.dataset.session import RevisionSession
-from bivosia.processing.quantify import quantify
-from bivosia.processing.zod_detection import detect_link_job
+from bivosia.dataset.io.json import read_json
+from bivosia.dataset.annotations.masks import RevisionSession
+from bivosia.processing.analysis.mask_quality import quantify
+from bivosia.processing.analysis.zones_of_disagreement import detect_link_job
 from bivosia.ui.recording_viewer import create_recording_viewer
 from bivosia.ui.keypoint_alignment_window import KeypointAlignmentWindow
 from bivosia.ui.revision_linking_editor import RevisionLinkingWindow
@@ -178,7 +178,7 @@ class RecordingViewerTests(unittest.TestCase):
         with h5py.File(self.dataset.mask('reverse'), 'r+') as file:
             masks = file['masks'][2]
             file['masks'][2] = np.where(masks > 0, 3 - masks, 0)
-        with patch('bivosia.processing.zod_detection.create_automatic_annotation',
+        with patch('bivosia.processing.analysis.zones_of_disagreement.create_automatic_annotation',
                    side_effect=AssertionError('Mask analysis must not generate links')):
             quantify(self.dataset, 2, workers=1)
         editor = RevisionLinkingWindow(self.dataset)
@@ -201,7 +201,7 @@ class RecordingViewerTests(unittest.TestCase):
                          [link['automatic'] for link in session.links.values()])
         self.assertEqual(session.path.read_bytes(), saved)
         self.dataset.select_annotation(session.path)
-        with patch('bivosia.analysis.linking.Linker.boundary_match', side_effect=AssertionError('Unexpected link calculation')):
+        with patch('bivosia.analysis.mask_linking.Linker.boundary_match', side_effect=AssertionError('Unexpected link calculation')):
             editor.load_data()
             viewer = self.viewer()
             self.assertEqual(len(viewer.global_links.automatic), len(session.jobs))
@@ -212,7 +212,7 @@ class RecordingViewerTests(unittest.TestCase):
         self.assertTrue(any(link['status'] == 'needs_review' for link in session.links.values()))
         session.save()
         saved = session.path.read_bytes()
-        with patch('bivosia.analysis.linking.Linker.boundary_match', side_effect=AssertionError('Unexpected link calculation')):
+        with patch('bivosia.analysis.mask_linking.Linker.boundary_match', side_effect=AssertionError('Unexpected link calculation')):
             viewer = self.viewer()
             self.assertLess(len(viewer.global_links.automatic), len(session.jobs))
         self.assertEqual(session.path.read_bytes(), saved)
@@ -233,7 +233,7 @@ class RecordingViewerTests(unittest.TestCase):
         session.links[automatic.id] = automatic_link(automatic, editor.data.mask, 2)
         session.save(self.dataset.new_annotation(.6, .9))
         saved = session.path.read_bytes()
-        with patch('bivosia.analysis.linking.match_masks', side_effect=AssertionError('Opening must not match masks')):
+        with patch('bivosia.analysis.mask_linking.match_masks', side_effect=AssertionError('Opening must not match masks')):
             editor._load_annotation(session.path)
         self.assertEqual(editor.session.zones[0].status, 'unseen')
         self.assertFalse(editor.session.dirty)
@@ -245,7 +245,7 @@ class RecordingViewerTests(unittest.TestCase):
         self.assertIsNone(editor.automatic_task)
         self.assertEqual(session.path.read_bytes(), saved)
         with patch.object(editor, '_automatic_choice', return_value='fill'), patch(
-                'bivosia.processing.zod_detection.automatic_link', wraps=automatic_link) as calculate:
+                'bivosia.processing.analysis.zones_of_disagreement.automatic_link', wraps=automatic_link) as calculate:
             editor.run_automatic()
             self.finish_automatic(editor)
         self.assertEqual(calculate.call_count, 1)

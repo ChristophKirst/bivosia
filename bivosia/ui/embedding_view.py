@@ -8,8 +8,8 @@ import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QFormLayout, QPushButton, QVBoxLayout, QWidget
 
-from bivosia.analysis.zones_of_disagreement import RevisionZone
-from bivosia.dataset.shape_features import open_feature_video
+from bivosia.analysis.zones_of_disagreement import ZodAnnotation
+from bivosia.dataset.mask_features import open_feature_video
 from bivosia.ui.colors import MASK_COLORS_BGR, identity_colors
 from bivosia.ui.dock_panel import PanelSplitter
 from bivosia.ui.embedding_plot import EmbeddingPlot
@@ -131,7 +131,7 @@ class EmbeddingView(QWidget):
                               if len(self.identities) else None)
         self.plot.set_points(self.coordinates, self.identities, self.color_mode.currentData())
         self.masks_button.setEnabled(self.coordinates is not None and self.coordinates.shape[1] == 2)
-        zones = [RevisionZone(**zone) for zone in info.get('zones', ())]
+        zones = [ZodAnnotation(**zone) for zone in info.get('zones', ())]
         count = info.get('frame_count', 1)
         self.timeline.set_data(count, zones, self.frames, self.identities, self.plot.colors)
         key = (str(dataset.directory), source, info.get('source'))

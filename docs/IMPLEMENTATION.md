@@ -28,18 +28,43 @@ bivosia/
     masks.py          validation, relabeling, cleanup and preprocessing
     mask_features.py  geometry, contour and Zernike descriptors, temporal features
                       and frame summaries
-    quality.py        IoU, assignments, margins, switches and direction comparisons
+    mask_quality.py   IoU, assignments, margins, switches and direction comparisons
     zones_of_disagreement.py evidence, seeds, expansion, merging,
                              zone summaries, interval edits and mask directions
-    linking.py        boundary matches, identity propagation and validation
+    mask_linking.py   boundary matches, identity propagation and validation
   processing/
-    quantify.py       basic mask quantification over a recording
-    revision.py       loaded-recording integration for editing/linking
-    export.py         validated mask output generation
-    features.py       detailed feature output generation
+    analysis/
+      alignment.py    keypoint-to-mask alignment over a recording
+      keypoints.py    keypoint displacement over a recording
+      mask_quality.py basic mask quantification over a recording
+      mask_export.py validated mask output generation
+      mask_features.py detailed feature output generation
+      mask_shape.py  sampled shape descriptors and embeddings
+      zones_of_disagreement.py detection, direction choices and automatic linking
+    segmentation/
+      keyframes.py   prompted key-frame prediction and its remote service
+      vos.py         bidirectional video-mask propagation
+      model_install.py segmentation packages and model weights
+    storage/
+      file_operations.py individual file transfers
+      folder_operations.py folder transfers and cleanup
+      consolidation.py dataset consolidation and required-input synchronization
+    remote/
+      client.py       SSH requests and installation checks
+      server.py       request dispatch to the appropriate subsystem
+      session.py      persistent connections, timeouts and cleanup
+    jobs.py           input checks, job submission, execution and monitoring
+    workflow.py       workflow dependencies and step execution
     parallel.py       shared block-processing utilities
     log.py            logging setup and progress reporting
-  dataset/            dataset locations, I/O and session persistence
+  dataset/            dataset layout, recordings and data-specific readers
+    recording.py      loaded recording and ZoD/linking access
+    io/               interfaces, format registry, adapters and array transport
+    annotations/      key-frame and mask annotation state and persistence
+      keyframes.py    key-frame masks, prompts and editing state
+      masks.py        mask selection, validity, review, identity links and inputs
+    storage/          locations, inventory, file operations and remote readers
+    workflow/         processing settings, input validation, job records and status
   segmentation/       image/video interfaces and SAM/Cutie backends
   ui/                 viewers, editor and future console
   run/                thin entry points
@@ -48,9 +73,9 @@ bivosia/
 
 `analysis/zones_of_disagreement.py` owns zone detection, shared missing-mask
 event classification, zone summaries and revision interval rules. UI adapters
-only turn those results into display records. `processing/revision.py` connects
+only turn those results into display records. `dataset/recording.py` connects
 the analysis to a loaded recording. Identity linking remains in
-`analysis/linking.py`, including independent frame transitions inside a zone.
+`analysis/mask_linking.py`, including independent frame transitions inside a zone.
 
 The default detector combines missing-mask, assignment-switch and low-quality
 seeds, expands to recovery, then merges intervals using an inclusive frame gap.
@@ -68,9 +93,9 @@ header. Loaded zone records retain their saved choices; automatic interval
 edits use the session's method and manually chosen directions are preserved.
 
 Pixel-label replacement lives in `analysis/masks.py`, identity validation and
-preferred-mask selection in `analysis/linking.py`, and output streaming in
-`processing/export.py` using dataset writers. `Linker` operates on a supplied
-mask accessor and evidence arrays; `processing/revision.py` connects it to the
+preferred-mask selection in `analysis/mask_linking.py`, and output streaming in
+`processing/analysis/mask_export.py` using dataset writers. `Linker` operates on a supplied
+mask accessor and evidence arrays; `RevisionRecording` in `dataset/recording.py` connects it to the
 loaded recording.
 
 ## Point and mask alignment
@@ -80,7 +105,7 @@ using the alignment's selected nodes in original source-image pixels.
 `analysis/keypoints.py`
 averages Euclidean displacement over nodes with finite xy in both consecutive
 frames for each track; no common nodes gives positive infinity. The frame-pair
-score is the maximum across tracks. `processing/keypoints.py` computes blocks
+score is the maximum across tracks. `processing/analysis/keypoints.py` computes blocks
 with one overlapping frame so no boundary transition is lost.
 `analysis/keypoint_displacement.h5` stores `individual[t, track]` and `maximal[t]`
 for the transition t to t+1, plus units, source image shape, node/track names
@@ -90,7 +115,7 @@ No transition beyond the final supplied frame is used.
 Skeleton detection and finite-point counts use the same selected nodes as
 alignment and displacement. A track with finite coordinates only at excluded
 nodes is missing. The viewer and exported frame annotations
-share this selection through PointData.selected_node_ids. Raw per-node evidence
+share this selection through `KeypointInputs.selected_node_ids`. Raw per-node evidence
 and the optional All keypoints overlay retain the source nodes.
 The standard and comparison viewers load these results into a synchronized
 Keypoint displacement dock below Zones, visible by default. The shared graph
@@ -100,7 +125,7 @@ behavior reuse the existing panels. No mask or keypoint swap results change.
 
 `config.py` separates `DATASET_LAYOUT` (folders and file names), `DATA_FORMATS`
 (data-category readers, writers and suffixes), `KEY_FRAME_BACKENDS` (SAM2/SAM3)
-and `VOS_BACKENDS` (Cutie). `ANALYSIS_DEFAULTS['quality']['count_dtype']`
+and `VOS_BACKENDS` (Cutie). `ANALYSIS_DEFAULTS['mask_quality']['count_dtype']`
 sets the pixel-count dtype shared by overlap calculation and result loading.
 `ANALYSIS_DEFAULTS['zones_of_disagreement']['theta_quality']` supplies the `0.60` seed default to the detector,
 processing, linking and viewers; explicit thresholds and saved annotation settings
@@ -108,14 +133,15 @@ retain their supplied values.
 Both defaults dictionaries use module names as their top-level keys.
 `ANALYSIS_DEFAULTS` groups detection thresholds in `zones_of_disagreement`, assignment
 fallback, tie tolerances and dilation in `alignment`, counts and temporal intersections
-in `quality`, and optional Hu, convex-hull and FFT features in `mask_features`.
+in `mask_quality`, mask-linking tie tolerance in `mask_linking`, and optional Hu,
+convex-hull and FFT features in `mask_features`.
 Zernike settings live in `mask_features['zernike']`; optional z-scoring belongs to `embedding`.
 `analysis/masks.py` contains validation and mask manipulation. Cleanup and preprocessing defaults live under
 `ANALYSIS_DEFAULTS['masks']['cleanup']` and `ANALYSIS_DEFAULTS['masks']['preprocessing']`.
 `analysis/mask_features.py` groups geometry and presence, contour and temporal features,
-Zernike descriptors, frame summaries and feature validation. `analysis/quality.py`
+Zernike descriptors, frame summaries and feature validation. `analysis/mask_quality.py`
 groups overlaps, assignment quality, temporal comparisons and recording comparisons.
-`analysis/linking.py` uses these comparisons to establish identities across segments.
+`analysis/mask_linking.py` uses these comparisons to establish identities across segments.
 `include_hu_features=False` skips both signed-log Hu values and Hu-based temporal
 shape comparisons; `max_shape_change_i1` is omitted when its source is absent.
 Raw and derived output column names record the selected features.
@@ -123,14 +149,20 @@ Raw and derived output column names record the selected features.
 convex-hull excess and spectral calculations, including their derived measures.
 Spectral sampling and frequency parameters live under `mask_features['fft_features']`
 regardless of whether calculation is enabled.
-`PROCESSING_DEFAULTS` groups batch/block sizes and worker counts under `quantify`,
-`features`, `alignment` and `keypoints`, and timing intervals under `jobs`.
+`PROCESSING_DEFAULTS['analysis']` groups batch/block sizes and worker counts under
+`mask_quality`, `mask_features`, `mask_shape`, `alignment` and `keypoints`.
+`PROCESSING_DEFAULTS['jobs']` holds job timing intervals.
+`mask_shape` also holds frame-sampling defaults. Saved workflow operation identifiers
+such as `quantify`, `detect_link` and `shape_features` identify jobs independently
+of their implementing modules.
+`PROCESSING_DEFAULTS['remote']['session']['timeout_seconds']` sets the shared
+request timeout for remote mask readers and image segmentation.
 `None` workers means automatic selection;
 alignment defaults to one worker. CLI switches override only the options explicitly
 supplied, so omitted options retain the configured defaults. `JOB_TERMINAL_STATES`
 remains a fixed job-state definition.
 Processing passes the selected dtype to its workers and checks pixel-count capacity
-before writing. `dataset/formats.py` resolves an explicit format or a
+before writing. `dataset/io/registry.py` resolves an explicit format or a
 unique suffix within the requested category. Read-only formats have no writer
 entry. Masks support HDF5, NPY and NPZ; points use SLEAP, videos use OpenCV,
 analysis arrays use NPY, documents use JSON and structured result containers use
@@ -147,13 +179,42 @@ define distinct inference interfaces. The SAM2/SAM3 specializations share prompt
 inference and image-embedding reuse. The editors consume registry definitions and
 model metadata without branching on backend names.
 
-`dataset/frame_data.py` defines `PointData` and `MaskData`: frame-indexed data
-with dimensions and explicit validity. `SleapPoints` converts SLEAP's
-track-major axes on read. `Hdf5Masks`, `NpyMasks` and `NpzMasks` specialize
-`MaskData` for HDF5, memory-mapped NPY and compressed NPZ files. `NumpyMasks`
+`dataset/io/interfaces.py` defines `KeypointReader`, `MaskReader`, `VideoReader` and
+`FileMetadata`. Points and masks expose frame-indexed data with dimensions and
+explicit validity; video readers expose decoded images and frame rate.
+Reader implementations use a source prefix, such as `Hdf5MaskReader` and
+`SleapKeypointReader`. Editable annotation state uses `Session` or `Draft`;
+`dataset/annotations/masks.py` groups `RevisionSession`, saved annotation loading
+and `AnnotationInputs`, which owns the analysis inputs needed for annotation and
+export. It manages mask-selection and identity-link annotations;
+`dataset/masks.py` reads and writes the mask arrays themselves.
+`KeypointInputs` combines a coordinate reader with optional alignment and
+displacement results. The reader itself contains source data and coordinate
+metadata, not analysis results or node-selection settings.
+
+`AlignmentResult`, `MaskMatchResult`, `LinkResult` and `EmbeddingResult` stay
+with their algorithms in `analysis`. `ZodEvidence` and `ZodResult` hold detection
+evidence and output there.
+`ZodAnnotation` holds one editable ZoD interval, its mask choice and review status;
+`ZodView` is its display representation in `ui`. Recording-wide partitions use
+`Segment`, including intervals outside ZoDs. `MaskShapeResults` in
+`dataset/mask_features.py` locates and validates saved mask-shape descriptors and
+embeddings; it does not hold the numerical result arrays.
+`MaskShapeDescriptors` contains loaded descriptor rows, frame/identity indices
+and provenance. `MaskShapeEmbedding` combines an `EmbeddingResult` with those
+sample indices and provenance. The same numerical embedding type is returned
+by calculation and file loading.
+`RevisionRecording` specializes `Recording` with ZoD detection and linking access;
+both live in `dataset/recording.py` and own the loaded recording resources.
+`RecordingStreams` groups video and mask readers for playback.
+`SleapKeypointReader` converts SLEAP's
+track-major axes on read. `Hdf5MaskReader`, `NpyMaskReader` and `NpzMaskReader` specialize
+`MaskReader` for HDF5, memory-mapped NPY and compressed NPZ files. `NumpyMaskReader`
 adapts supplied arrays. `open_masks` selects the file reader for analysis and
-video loading; `dataset/mask_output.py` writes the same formats. NPY stores
-partial frame validity in an optional `.valid.npy` sidecar; HDF5 and NPZ keep
+video loading. `dataset/masks.py` also selects exported or annotation-based masks
+and writes mask outputs. `dataset/io/numpy.py` and `dataset/io/hdf5.py` each
+contain generic format operations and mask adapters. NPY stores partial frame
+validity in an optional `.valid.npy` sidecar; HDF5 and NPZ keep
 validity with the labels. Historical hand annotations are converted by
 `_previous/run/import_hand_annotations.py`, with source-version information
 retained as provenance rather than an importer name.
@@ -161,7 +222,7 @@ retained as provenance rather than an importer name.
 Optional `keypoints/keypoints.h5` retains the SLEAP analysis file in its native
 format. `dataset.json` annotates its source `keypoints.image_shape` and optional
 `invalid_frames`. The reader exposes frame-major (frame, track, node, xy)
-coordinates, names and frame validity through `PointData`; a single point uses
+coordinates, names and frame validity through `KeypointReader`; a single point uses
 one node. Requested slices are limited to the dataset's mask frame count.
 Readers do not retain an open point-file handle. The annotated point
 `image_shape` and mask array dimensions describe their coordinate systems.
@@ -192,7 +253,7 @@ Equal optima leave ambiguous pairs unmatched. Optional previous-assignment
 fallback retains compatible pairs, propagates initial ties backward from the
 first non-tied valid frame, and preserves every tie flag.
 
-`processing/alignment.py` selects the annotation's mask direction, combines
+`processing/analysis/alignment.py` selects the annotation's mask direction, combines
 mask and point validity, and runs blocks with shared progress/cancellation.
 The `align` CLI command uses the selected annotation; `--fallback-previous`
 enables temporal fallback, which requires consistent mask identities.
@@ -243,7 +304,7 @@ the matcher's saved flags even with temporal fallback. Missing skeleton marks
 fewer detected skeletons than expected animals on valid alignment frames. A
 skeleton is detected when it has at least one finite xy pair among its
 analysis-selected nodes, independently of mask overlap. The existing
-`processing/keypoints.py` block reader supplies counts to the analysis; the
+`processing/analysis/keypoints.py` block reader supplies counts to the analysis; the
 viewer calculates them once on opening. This display flag does not change
 alignment. Both timelines show the same five subrows. Partial resolved swaps
 are dark blue, directly below the normal blue swaps. Invalid crossings are
@@ -418,8 +479,8 @@ Automatic results do not change saved hand annotations or approval records.
 
 | Step | Responsibility | Scope |
 |---|---|---|
-| 1. Mask generation | Key-frame editing and video propagation | `segmentation` backends, executed through `processing/segmentation.py` |
-| 2. Mask quantification | Integer intersections and per-direction areas in one mask pass; derive IoU, Hungarian assignments, quality and switches from those counts | `analysis/mask_features.py` and `analysis/quality.py`, executed through `processing/quantify.py` |
+| 1. Mask generation | Key-frame editing and video propagation | `segmentation` backends, executed through `processing/segmentation/vos.py` |
+| 2. Mask quantification | Integer intersections and per-direction areas in one mask pass; derive IoU, Hungarian assignments, quality and switches from those counts | `analysis/mask_features.py` and `analysis/mask_quality.py`, executed through `processing/analysis/mask_quality.py` |
 | 3. Detection and automatic direction | Detect zones, summarize flags and choose mask direction using the selected method | `analysis/zones_of_disagreement.py` |
 | 4. Zone editing | Revise intervals, select masks and approve links | Existing UI calls analysis algorithms; session state/history stays in `dataset` |
 | 5. Validated outputs | Validate links and generate relabeled masks and optional detailed features | Shared export/feature processing functions |
@@ -457,8 +518,8 @@ Unions and normalized IoU are derived from the count arrays, not persisted:
 arithmetic. Frames exceeding uint32 pixel capacity are rejected before processing.
 Either area being zero produces NaN IoU.
 Assignments and quality use the same formulas as before and run over count-array
-blocks without reading masks again. `dataset.arrays.MaskOverlaps` owns the
-memory maps and calls the shared conversion in `analysis/quality.py`.
+blocks without reading masks again. `dataset.mask_quality.MaskOverlapReader` owns the
+memory maps and calls the shared conversion in `analysis/mask_quality.py`.
 Processing and GUI entry points share a `Dataset` instance; `Recording(dataset)`
 adds loaded evidence and video resources. Historical normalized-array readers
 and processing entry points remain under `_previous`.
@@ -467,14 +528,14 @@ and processing entry points remain under `_previous`.
 
 | Current code | Destination |
 |---|---|
-| `calculate_iou_matrix.frame_iou_matrix` | `analysis/quality.py` |
-| Assignments, missing-mask measures, margins and switch calculations in `detection.py` | Comparison calculations in `analysis/quality.py`; zone detection in `analysis/zones_of_disagreement.py` |
-| Block loops and file processing in the IoU, match and quality calculators | `processing/quantify.py`, using dataset I/O |
+| `calculate_iou_matrix.frame_iou_matrix` | `analysis/mask_quality.py` |
+| Assignments, missing-mask measures, margins and switch calculations in `detection.py` | Comparison calculations in `analysis/mask_quality.py`; zone detection in `analysis/zones_of_disagreement.py` |
+| Block loops and file processing in the IoU, match and quality calculators | `processing/analysis/mask_quality.py`, using dataset I/O |
 | `zone_revision.py` | `analysis/zones_of_disagreement.py` |
-| `zone_linking.py` and export identity validation | `analysis/linking.py` |
-| `global_relabel.py` | Pixel mapping in `analysis/masks.py`; identity/source rules in `analysis/linking.py`; streaming in `processing/export.py` |
-| `revision_data.py` | Numerical linking rules in analysis; loaded-recording orchestration/caches in `processing/revision.py` |
-| Feature and measure calculators | Geometry, descriptors and frame summaries in `analysis/mask_features.py`; forward/reverse comparisons in `analysis/quality.py`; recording-scale execution in `processing/features.py` and `processing/shape_features.py` |
+| `zone_linking.py` and export identity validation | `analysis/mask_linking.py` |
+| `global_relabel.py` | Pixel mapping in `analysis/masks.py`; identity/source rules in `analysis/mask_linking.py`; streaming in `processing/analysis/mask_export.py` |
+| `revision_data.py` | Numerical linking rules in analysis; loaded-recording orchestration/caches in `dataset/recording.py` |
+| Feature and measure calculators | Geometry, descriptors and frame summaries in `analysis/mask_features.py`; forward/reverse comparisons in `analysis/mask_quality.py`; recording-scale execution in `processing/analysis/mask_features.py` and `processing/analysis/mask_shape.py` |
 | `parallel.py` | Worker utilities in `processing/parallel.py`; progress reporting in `processing/log.py` |
 | Embedded `main()` functions | Thin entry points in `run` where needed |
 
@@ -592,9 +653,9 @@ templates and inherited storage preferences. `dataset/paths.py` resolves
 that declaration, including metadata companions and parameterized job folders.
 `DATA_FORMATS` owns the NPY mask validity companion, NPZ scratch array and JSON
 temporary-file patterns. Readers, writers and mask discovery share those declarations.
-`FILE_PATTERNS` centralizes shared partial, lock and download filenames.
+`FILE_PATTERNS` centralizes shared partial and lock filenames.
 
-`dataset/key_frames.py` owns annotation state, mask history and persistence.
+`dataset/annotations/keyframes.py` owns annotation state, mask history and persistence.
 Its two files live together in `masks/key_frame/`, separate from ZoD/revision
 annotations:
 
@@ -635,7 +696,7 @@ annotations:
   cycles animal IDs, excluding background.
 
 `segmentation/backends/sam.py` lazily loads either SAM2 or SAM3, reusing one image
-embedding for repeated prompts. `processing/key_frames.py` performs prompt prediction
+embedding for repeated prompts. `processing/segmentation/keyframes.py` performs prompt prediction
 with standard logging. The UI runs it in a worker thread. Upstream source and
 checkpoints stay in `external/sam/`. The explicit installer supports SAM2 and
 Cutie; SAM3 requires a manually installed package and checkpoint. Inference
@@ -649,9 +710,9 @@ explicit device argument is respected. Model controls are disabled during
 prediction. Manual editing remains available even without a usable SAM model.
 
 The editor's Local/SSH choice reuses the saved installation selector, omitting
-the remote dataset field. `segmentation/remote_image.py` implements the same
-image predictor interface through `processing/remote_session.py` and
-`processing/remote_images.py`. One SSH process retains the existing SAM adapter
+the remote dataset field. `RemoteImageSegmenter` in `segmentation/image.py`
+implements the image predictor interface through `processing/remote/session.py` and
+`processing/segmentation/keyframes.py`. One SSH process retains the existing SAM adapter
 and its current image embedding. Compressed NumPy arrays preserve RGB pixels,
 point prompts, candidate masks and scores exactly; decoding disables pickle.
 Availability checks run asynchronously on the chosen host. Requests have a
@@ -691,10 +752,10 @@ Actual SSH-server inference remains unverified.
 ## Video-object segmentation and background jobs
 
 The first VOS interface is implemented. `segmentation/image.py` and
-`segmentation/vos.py` define independent image and sequence interfaces;
+`segmentation/video.py` define independent image and sequence interfaces;
 `segmentation/backends` contains SAM and Cutie adapters. VOS reference selection
 and model state stay in segmentation; frame/label/coverage validation is in
-`analysis/keyframes.py`. `processing/segmentation.py` executes interval runs,
+`analysis/keyframes.py`. `processing/segmentation/vos.py` executes interval runs,
 using the dataset video reader and transactional mask writer. Source RGB frames
 are decoded directly; reverse traversal uses bounded forward-decoded blocks.
 No JPEGs, reversed clips or intermediate PNG masks are generated.
@@ -707,13 +768,14 @@ forward/reverse runs, native output and internal size 480. Both ends and All key
 preload permanent references; transient sensory state is reset before propagation.
 Reference IDs must represent the same animals across the selected key frames.
 
-`processing/jobs.py` starts detached Python workers; `processing/remote.py` uses
-OpenSSH to invoke that same worker. Remote Linux workers use a systemd user service when available to survive SSH logout.
-There is no cluster adapter, permanent SAM service or web server. Job records/logs are owned by `dataset/jobs.py`.
+`processing/jobs.py` starts detached Python workers. `processing/remote/client.py`
+uses OpenSSH to reach `processing/remote/server.py`, which dispatches requests to
+the existing job runner and dataset services. Remote Linux workers use a systemd user service when available to survive SSH logout.
+There is no cluster adapter, permanent SAM service or web server. Job records/logs are owned by `dataset/workflow/jobs.py`.
 Saved remote installations use application preferences through
 `ui/remote_settings.py`. The shared `RemoteTarget` selector remembers each local
 dataset's selected installation; remote directories belong to the dataset description. Registration checks core imports and the protocol
-through `processing/remote.py` without accessing a dataset or loading model weights.
+through the remote client and server without accessing a dataset or loading model weights.
 Exported scripts call the same runner, normally or with --background. SSH inputs
 are structured JSON; credentials stay in SSH. Submission IDs prevent duplicate
 launch on repeated requests. Workers read key-frame inputs into memory on startup.
@@ -723,15 +785,17 @@ concurrent writers, existing outputs are refused, and incomplete files remain
 separate. Dataset transfers belong to the dataset viewer. Consolidation compares copies,
 collects conflict choices, verifies published bytes and writes a self-contained destination description.
 
-`dataset/remote_reader.py` owns one persistent SSH session for a mask pair. The server uses
+`dataset/storage/remote_reader.py` owns one persistent SSH session for a mask pair. The server uses
 `open_masks()` and its registered HDF5/NPY/NPZ adapters. Frames are transferred on demand;
 recording plots use temporary snapshots of the much smaller numerical analysis products.
-Workflow checks include registered remote locations, and analysis windows submit jobs to
+`dataset/storage/inventory.py` scans local, mounted and registered SSH locations;
+`dataset/workflow/status.py` combines their available results and workflow status.
+Analysis windows submit jobs to
 the selected installation. The shared console polls logs asynchronously.
 
 Masks retain source indices and an explicit validity array outside the crop.
 Full-recording analysis currently rejects cropped output. Focused checks cover
 frame order, key frames, references, crop validity, cancellation, output protection,
-background failure reporting, script execution, protocol/fetch and off-screen UI.
+background failure reporting, script execution, remote file transfers and off-screen UI.
 Remote mask reads and a small remote analysis job were verified on the registered Linux workstation.
 Non-Linux hosts remain unverified.

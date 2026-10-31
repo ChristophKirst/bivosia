@@ -16,11 +16,22 @@ __project__ = 'BiVOSIA'
 __author__ = 'Kara Quine, Shuyu Wang, Christoph Kirst'
 __contact__ = 'christoph.kirst@ucsf.edu'
 
+from dataclasses import dataclass
 import operator
 
 import numpy as np
 
 from bivosia.config import ANALYSIS_DEFAULTS
+
+
+@dataclass(frozen=True)
+class EmbeddingResult:
+    """Embedding coordinates, input scaling and the fitted model parameters."""
+
+    coordinates: np.ndarray
+    mean: np.ndarray
+    scale: np.ndarray
+    parameters: dict
 
 
 def embedding_features(features, *, z_score=ANALYSIS_DEFAULTS['embedding']['z_score']):
@@ -54,7 +65,7 @@ def embedding_dimensions(n_components):
 
 
 def umap_embedding(features, *, n_components=ANALYSIS_DEFAULTS['embedding']['n_components'],
-                   z_score=ANALYSIS_DEFAULTS['embedding']['z_score']):
+                   z_score=ANALYSIS_DEFAULTS['embedding']['z_score']) -> EmbeddingResult:
     """Fit a 2D or 3D UMAP, keeping the library's other defaults."""
     from umap import UMAP
 
@@ -67,7 +78,7 @@ def umap_embedding(features, *, n_components=ANALYSIS_DEFAULTS['embedding']['n_c
     model = UMAP(n_components=n_components)
     coordinates = model.fit_transform(values)
     validate_embedding(coordinates, mean, scale, len(values), values.shape[1], n_components=n_components)
-    return coordinates, mean, scale, model.get_params()
+    return EmbeddingResult(coordinates, mean, scale, model.get_params())
 
 
 def validate_embedding(coordinates, mean, scale, samples, features, *,

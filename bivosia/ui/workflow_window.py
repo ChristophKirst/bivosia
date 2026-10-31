@@ -21,14 +21,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QCheckBox
 
 from bivosia.config import JOB_TERMINAL_STATES, WORKFLOW_STEPS
 from bivosia.dataset.layout import Dataset
-from bivosia.dataset.processing_settings import execution_settings
+from bivosia.dataset.workflow.processing import execution_settings
 from bivosia.processing.workflow import required_products, step_availability, validate_step_settings
 from bivosia.ui.job_monitor import JobMonitor
 from bivosia.ui.processing_target import ProcessingTarget
 from bivosia.ui.processing_request import ProcessingRequest
 from bivosia.ui.processing_settings_dialog import ProcessingSettingsDialog
 from bivosia.ui.step_settings import step_store
-from bivosia.processing.remote_inventory import inspect_locations
+from bivosia.dataset.workflow.status import inspect_locations
 from bivosia.ui.dataset_access import location_preferences
 from bivosia.ui.colors import WORKFLOW_COLORS
 from bivosia.ui.dataset_viewer import _duration

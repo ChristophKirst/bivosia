@@ -17,7 +17,7 @@ __contact__ = 'christoph.kirst@ucsf.edu'
 
 from pathlib import Path
 
-from bivosia.dataset.formats import format_handler, format_spec
+from bivosia.dataset.io.registry import format_handler, format_spec
 from bivosia.dataset.layout import Dataset
 
 

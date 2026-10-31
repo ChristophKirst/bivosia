@@ -15,14 +15,14 @@ from bivosia.analysis.masks import downsample_mask, preprocess_mask, preprocessi
 from bivosia.analysis.zones_of_disagreement import revision_fingerprint
 from bivosia.analysis.mask_features import frame_zernike_features, zernike_features
 from bivosia.config import ANALYSIS_DEFAULTS
-from bivosia.dataset.containers import container_output
-from bivosia.dataset.jsonio import atomic_json
+from bivosia.dataset.io.containers import container_output
+from bivosia.dataset.io.json import atomic_json
 from bivosia.dataset.layout import Dataset
 from bivosia.dataset.masks import linked_mask_arrays
-from bivosia.dataset.shape_features import (
+from bivosia.dataset.mask_features import (
     embedding_path, read_zernike, shape_analysis_inputs, zernike_path,
 )
-from bivosia.processing.shape_features import extract_zernike
+from bivosia.processing.analysis.mask_shape import extract_zernike
 
 
 class MaskPreprocessingTests(unittest.TestCase):
@@ -119,14 +119,14 @@ class MaskPreprocessingTests(unittest.TestCase):
             cleaned = extract_zernike(dataset, radius=70, degree=2, block_size=2,
                                       preprocess_masks=True, **parameters,
                                       progress=lambda done, total: progress.append((done, total)))
-            values, frames, identities, metadata = read_zernike(cleaned, {'preprocessing': parameters})
-            self.assertEqual(frames.tolist(), [0, 0, 2, 2, 3, 3])
-            self.assertEqual(identities.tolist(), [1, 4, 1, 4, 1, 4])
+            descriptors = read_zernike(cleaned, {'preprocessing': parameters})
+            self.assertEqual(descriptors.frames.tolist(), [0, 0, 2, 2, 3, 3])
+            self.assertEqual(descriptors.identities.tolist(), [1, 4, 1, 4, 1, 4])
             expected_ids, expected, excluded = frame_zernike_features(labels[0], 70, 2, preprocessing=parameters)
             self.assertEqual(excluded, [])
-            np.testing.assert_allclose(values[:2], expected)
+            np.testing.assert_allclose(descriptors.values[:2], expected)
             np.testing.assert_array_equal(expected_ids, [1, 4])
-            self.assertEqual(metadata['image_shape'], [48, 64])
+            self.assertEqual(descriptors.metadata['image_shape'], [48, 64])
             self.assertEqual(progress[-1], (4, 4))
             self.assertNotEqual(raw, cleaned)
             self.assertEqual(cleaned, zernike_path(dataset, preprocess_masks=True))
